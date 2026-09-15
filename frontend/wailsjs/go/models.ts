@@ -23,6 +23,7 @@ export namespace account {
 	    syncInterval: number;
 	    syncAllFolders: boolean;
 	    syncFoldersEnabled: boolean;
+	    secondarySyncInterval: number;
 	    readReceiptRequestPolicy: string;
 	    sentFolderPath?: string;
 	    draftsFolderPath?: string;
@@ -64,6 +65,7 @@ export namespace account {
 	        this.syncInterval = source["syncInterval"];
 	        this.syncAllFolders = source["syncAllFolders"];
 	        this.syncFoldersEnabled = source["syncFoldersEnabled"];
+	        this.secondarySyncInterval = source["secondarySyncInterval"];
 	        this.readReceiptRequestPolicy = source["readReceiptRequestPolicy"];
 	        this.sentFolderPath = source["sentFolderPath"];
 	        this.draftsFolderPath = source["draftsFolderPath"];
@@ -117,6 +119,7 @@ export namespace account {
 	    syncInterval: number;
 	    syncAllFolders: boolean;
 	    syncFoldersEnabled: boolean;
+	    secondarySyncInterval: number;
 	    readReceiptRequestPolicy: string;
 	    sentFolderPath?: string;
 	    draftsFolderPath?: string;
@@ -154,6 +157,7 @@ export namespace account {
 	        this.syncInterval = source["syncInterval"];
 	        this.syncAllFolders = source["syncAllFolders"];
 	        this.syncFoldersEnabled = source["syncFoldersEnabled"];
+	        this.secondarySyncInterval = source["secondarySyncInterval"];
 	        this.readReceiptRequestPolicy = source["readReceiptRequestPolicy"];
 	        this.sentFolderPath = source["sentFolderPath"];
 	        this.draftsFolderPath = source["draftsFolderPath"];

@@ -77,6 +77,12 @@ type Account struct {
 	SyncAllFolders     bool `json:"syncAllFolders"`     // Sync all folders instead of just subscribed ones
 	SyncFoldersEnabled bool `json:"syncFoldersEnabled"` // User opted into folder sync management
 
+	// SecondarySyncInterval controls background polling for secondary folders
+	// (Trash/Spam/Archive/All Mail/Starred/Important). These change less
+	// frequently than core folders so they use a longer interval.
+	// 0 = derived from SyncInterval (clamped to a 10-minute floor).
+	SecondarySyncInterval int `json:"secondarySyncInterval"`
+
 	// Read receipt settings
 	// Controls whether to request read receipts when sending emails
 	// Values: "never" (default), "ask", "always"
@@ -213,6 +219,12 @@ type AccountConfig struct {
 	SyncInterval   int  `json:"syncInterval"`   // Minutes between polls (0 = manual only)
 	SyncAllFolders     bool `json:"syncAllFolders"`     // Sync all folders instead of just subscribed ones
 	SyncFoldersEnabled bool `json:"syncFoldersEnabled"` // User opted into folder sync management
+
+	// SecondarySyncInterval controls background polling for secondary folders
+	// (Trash/Spam/Archive/All Mail/Starred/Important). These change less
+	// frequently than core folders so they use a longer interval.
+	// 0 = derived from SyncInterval (max 10, min SyncInterval).
+	SecondarySyncInterval int `json:"secondarySyncInterval"` // Minutes between polls (0 = auto)
 
 	// Read receipt settings
 	ReadReceiptRequestPolicy string `json:"readReceiptRequestPolicy"`

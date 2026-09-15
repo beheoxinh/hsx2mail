@@ -267,3 +267,18 @@ export const syncIntervalOptions = [
   { value: 30, label: 'Every 30 minutes',  labelKey: 'account.every30Min' },
   { value: 60, label: 'Every hour',        labelKey: 'account.everyHour' },
 ] as const
+
+/**
+ * Secondary folder sync interval options (in minutes). Secondary folders are
+ * Trash, Spam, Archive, All Mail, Starred and Important — they change far less
+ * often than INBOX, so they get their own, usually longer, cadence.
+ * 0 = automatic (follows the main interval, never faster than 10 minutes).
+ */
+export const secondarySyncIntervalOptions = [
+  { value: 0,  label: 'Automatic',         labelKey: 'account.secondaryAuto' },
+  { value: 5,  label: 'Every 5 minutes',   labelKey: 'account.every5Min' },
+  { value: 10, label: 'Every 10 minutes',  labelKey: 'account.every10Min' },
+  { value: 15, label: 'Every 15 minutes',  labelKey: 'account.every15Min' },
+  { value: 30, label: 'Every 30 minutes',  labelKey: 'account.every30Min' },
+  { value: 60, label: 'Every hour',        labelKey: 'account.everyHour' },
+] as const

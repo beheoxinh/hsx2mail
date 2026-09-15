@@ -267,7 +267,9 @@ func (a *App) SyncAccountComplete(accountID string) error {
 // Three-way logic:
 //   - SyncAllFolders=true → all folders
 //   - SyncFoldersEnabled=true → subscribed folders (respects IMAP subscriptions)
-//   - default → core only (Inbox, Drafts, Sent) — backward compatible
+//   - default → core folders (Inbox, Drafts, Sent) + secondary folders (Trash,
+//     Spam, Archive, All Mail, Starred, Important) so unread badges and message
+//     content stay accurate everywhere.
 func (a *App) getSyncFolders(accountID string) ([]*folder.Folder, error) {
 	acct, err := a.accountStore.Get(accountID)
 	if err != nil {
@@ -279,7 +281,50 @@ func (a *App) getSyncFolders(accountID string) ([]*folder.Folder, error) {
 	if acct.SyncFoldersEnabled {
 		return a.folderStore.ListSubscribed(accountID)
 	}
-	return a.getCoreOnlyFolders(accountID)
+	core, err := a.getCoreOnlyFolders(accountID)
+	if err != nil {
+		return nil, err
+	}
+	secondary, err := a.getSecondaryFolders(accountID)
+	if err != nil {
+		return nil, err
+	}
+	// Merge, dedupe by ID (core first so it wins any duplicate).
+	byID := make(map[string]*folder.Folder, len(core)+len(secondary))
+	all := make([]*folder.Folder, 0, len(core)+len(secondary))
+	for _, f := range core {
+		if _, dup := byID[f.ID]; dup {
+			continue
+		}
+		byID[f.ID] = f
+		all = append(all, f)
+	}
+	for _, f := range secondary {
+		if _, dup := byID[f.ID]; dup {
+			continue
+		}
+		byID[f.ID] = f
+		all = append(all, f)
+	}
+	return all, nil
+}
+
+// getSecondaryFolders returns secondary folders (Trash, Spam, Archive, All Mail,
+// Starred, Important). These sync on a slower cycle than core folders to keep
+// unread counts accurate. Uses full List so special-use folders are picked up
+// even when not IMAP-subscribed (e.g. Gmail's [Gmail]/All Mail).
+func (a *App) getSecondaryFolders(accountID string) ([]*folder.Folder, error) {
+	folders, err := a.folderStore.List(accountID)
+	if err != nil {
+		return nil, err
+	}
+	var secondary []*folder.Folder
+	for _, f := range folders {
+		if folder.IsSecondaryFolder(f.Type) {
+			secondary = append(secondary, f)
+		}
+	}
+	return secondary, nil
 }
 
 // getCoreOnlyFolders returns core folders (Inbox, Drafts, Sent) — the default sync behavior.

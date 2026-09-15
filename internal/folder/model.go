@@ -17,6 +17,7 @@ const (
 	TypeArchive Type = "archive"
 	TypeAll     Type = "all"
 	TypeStarred Type = "starred"
+	TypeImportant Type = "important"
 	TypeFolder  Type = "folder"
 )
 
@@ -48,6 +49,18 @@ func (f *Folder) IsSpecial() bool {
 	return f.Type != TypeFolder
 }
 
+// IsSecondaryFolder returns true for folders that should sync on a slower
+// interval than core folders (Trash, Spam, Archive, All Mail, Starred,
+// Important). These are important for unread counts but change less frequently.
+func IsSecondaryFolder(t Type) bool {
+	switch t {
+	case TypeTrash, TypeSpam, TypeArchive, TypeAll, TypeStarred, TypeImportant:
+		return true
+	default:
+		return false
+	}
+}
+
 // CanDelete returns true if this folder can be deleted
 func (f *Folder) CanDelete() bool {
 	// Can't delete special folders
@@ -73,6 +86,8 @@ func (f *Folder) Icon() string {
 		return "mdi:email-multiple"
 	case TypeStarred:
 		return "mdi:star"
+	case TypeImportant:
+		return "mdi:star-outline"
 	default:
 		return "mdi:folder"
 	}

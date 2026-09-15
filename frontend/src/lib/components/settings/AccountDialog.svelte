@@ -74,6 +74,7 @@
   let allIdentityGroups = $state<app.AccountIdentityGroup[]>([])
   let syncPeriodDays = $state('180')
   let syncInterval = $state('30')
+  let secondarySyncInterval = $state('0')
   let syncAllFolders = $state(false)
   let syncFoldersEnabled = $state(false)
   let readReceiptRequestPolicy = $state('never')
@@ -126,6 +127,7 @@
       syncInterval = String(editAccount.syncInterval ?? 30)
       syncAllFolders = editAccount.syncAllFolders || false
       syncFoldersEnabled = editAccount.syncFoldersEnabled || false
+      secondarySyncInterval = String(editAccount.secondarySyncInterval ?? 0)
       readReceiptRequestPolicy = editAccount.readReceiptRequestPolicy || 'never'
       authType = editAccount.authType || 'password'
       color = editAccount.color || ''
@@ -232,6 +234,7 @@
         authType,
         syncPeriodDays: Number(syncPeriodDays),
         syncInterval: Number(syncInterval),
+        secondarySyncInterval: Number(secondarySyncInterval),
         syncAllFolders,
         syncFoldersEnabled,
         readReceiptRequestPolicy,
@@ -500,6 +503,8 @@
               onSyncAllFoldersChange={(v) => syncAllFolders = v}
               bind:syncFoldersEnabled
               onSyncFoldersEnabledChange={(v) => syncFoldersEnabled = v}
+              bind:secondarySyncInterval
+              onSecondarySyncIntervalChange={(v) => secondarySyncInterval = v}
               onFolderMappingChange={(type, v) => {
                 switch (type) {
                   case 'sent': sentFolderPath = v; break

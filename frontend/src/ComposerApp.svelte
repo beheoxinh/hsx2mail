@@ -27,7 +27,6 @@
 
   // Window state
   let isMaximized = $state(false)
-  let isHovering = $state(false)
 
   // Close request state - triggers Composer's close dialog
   let closeRequested = $state(false)
@@ -189,48 +188,54 @@
         <span class="text-sm font-medium text-foreground">{windowTitle()}</span>
       </div>
 
-      <!-- Mac-style traffic light controls -->
+      <!-- Windows-style window controls (square, full-height, icon-only) -->
       <div
-        class="flex items-center gap-2 px-3 h-full"
+        class="flex items-stretch h-full"
         role="group"
         aria-label={$_('aria.windowControls')}
-        onmouseenter={() => isHovering = true}
-        onmouseleave={() => isHovering = false}
       >
-        <!-- Minimize (yellow) -->
+        <!-- Minimize -->
         <button
-          class="w-3 h-3 rounded-full flex items-center justify-center transition-all bg-[#FEBC2E] hover:brightness-90 active:brightness-75"
+          class="w-12 h-full flex items-center justify-center text-foreground/80 hover:bg-foreground/10 active:bg-foreground/20 transition-colors"
           onclick={minimize}
           title={$_('window.minimize')}
           aria-label={$_('aria.minimizeWindow')}
         >
-          {#if isHovering}
-            <span class="text-[10px] font-bold text-black/60 leading-none">−</span>
-          {/if}
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="0" y="4.5" width="10" height="1" fill="currentColor" />
+          </svg>
         </button>
 
-        <!-- Maximize/Restore (green) -->
+        <!-- Maximize / Restore -->
         <button
-          class="w-3 h-3 rounded-full flex items-center justify-center transition-all bg-[#28C840] hover:brightness-90 active:brightness-75"
+          class="w-12 h-full flex items-center justify-center text-foreground/80 hover:bg-foreground/10 active:bg-foreground/20 transition-colors"
           onclick={toggleMaximize}
           title={isMaximized ? $_('window.restore') : $_('window.maximize')}
           aria-label={isMaximized ? $_('aria.restoreWindow') : $_('aria.maximizeWindow')}
         >
-          {#if isHovering}
-            <span class="text-[10px] font-bold text-black/60 leading-none">+</span>
+          {#if isMaximized}
+            <!-- Restore: two overlapping squares -->
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1">
+              <rect x="0.5" y="2.5" width="7" height="7" />
+              <path d="M2.5 2.5V0.5h7v7h-2" />
+            </svg>
+          {:else}
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1">
+              <rect x="0.5" y="0.5" width="9" height="9" />
+            </svg>
           {/if}
         </button>
 
-        <!-- Close (red) -->
+        <!-- Close -->
         <button
-          class="w-3 h-3 rounded-full flex items-center justify-center transition-all bg-[#FF5F57] hover:brightness-90 active:brightness-75"
+          class="w-12 h-full flex items-center justify-center text-foreground/80 hover:bg-[#c42b1c] hover:text-white active:bg-[#b02718] transition-colors"
           onclick={requestClose}
           title={$_('window.close')}
           aria-label={$_('aria.closeWindow')}
         >
-          {#if isHovering}
-            <span class="text-[10px] font-bold text-black/60 leading-none">×</span>
-          {/if}
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" stroke="currentColor" stroke-width="1">
+            <path d="M0.5 0.5l9 9M9.5 0.5l-9 9" />
+          </svg>
         </button>
       </div>
     </header>

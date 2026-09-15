@@ -158,6 +158,7 @@
   }
   let syncPeriodDays = $state<string>('180')
   let syncInterval = $state<string>('30') // Default: 30 minutes
+  let secondarySyncInterval = $state<string>('0') // Default: automatic (derived)
   let readReceiptRequestPolicy = $state<string>('never')
 
   // Read receipt request policy options
@@ -529,6 +530,7 @@
       authType: authMethod,
       syncPeriodDays: Number(syncPeriodDays),
       syncInterval: Number(syncInterval),
+      secondarySyncInterval: Number(secondarySyncInterval),
       readReceiptRequestPolicy,
       // Folder mappings
       sentFolderPath,

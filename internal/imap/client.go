@@ -384,6 +384,7 @@ const (
 	FolderTypeArchive FolderType = "archive"
 	FolderTypeAll     FolderType = "all"
 	FolderTypeStarred FolderType = "starred"
+	FolderTypeImportant FolderType = "important"
 	FolderTypeFolder  FolderType = "folder"
 )
 
@@ -549,6 +550,8 @@ func determineFolderType(name string, attrs []imap.MailboxAttr) FolderType {
 		return FolderTypeAll
 	case containsIgnoreCase(name, "starred") || containsIgnoreCase(name, "flagged"):
 		return FolderTypeStarred
+	case containsIgnoreCase(name, "important"):
+		return FolderTypeImportant
 	}
 
 	return FolderTypeFolder

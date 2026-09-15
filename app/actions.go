@@ -105,27 +105,74 @@ func (a *App) MarkAllFolderMessagesAsUnread(folderID string) error {
 // read on the server (STORE * +FLAGS.SILENT \Seen). Used when a folder has
 // unread counts from IMAP STATUS but no synced local rows — the local
 // UpdateFlagsBatch path has nothing to update, so we go straight to the
-// server. After this, the next sync will pick up the \Seen flags.
+// server. After the STORE we recount the local DB (empty here for un-synced
+// folders; 0 for read) and emit countsChanged so the sidebar badge drops
+// immediately instead of waiting for the next sync.
 func (a *App) markAllReadServerSide(folderObj *folder.Folder) error {
-	return a.withIMAPRetry(folderObj.AccountID, func(conn *imap.Client) error {
+	if err := a.withIMAPRetry(folderObj.AccountID, func(conn *imap.Client) error {
 		if _, err := conn.SelectMailbox(a.ctx, folderObj.Path); err != nil {
 			return fmt.Errorf("failed to select mailbox: %w", err)
 		}
 		a.noteOwnFlagChange(folderObj.AccountID)
 		return conn.MarkAllRead()
-	})
+	}); err != nil {
+		return err
+	}
+	return a.refreshFolderUnreadAfterServerFlagChange(folderObj)
 }
 
 // markAllUnreadServerSide is the mirror of markAllReadServerSide — it clears
-// \Seen for every message in the mailbox.
+// \Seen for every message in the mailbox. For an un-synced folder the local
+// count is 0 unread (all local rows are read/nonexistent) so we set the badge
+// from server STATUS (total messages) via StatusFolder.
 func (a *App) markAllUnreadServerSide(folderObj *folder.Folder) error {
-	return a.withIMAPRetry(folderObj.AccountID, func(conn *imap.Client) error {
+	if err := a.withIMAPRetry(folderObj.AccountID, func(conn *imap.Client) error {
 		if _, err := conn.SelectMailbox(a.ctx, folderObj.Path); err != nil {
 			return fmt.Errorf("failed to select mailbox: %w", err)
 		}
 		a.noteOwnFlagChange(folderObj.AccountID)
 		return conn.MarkAllUnread()
+	}); err != nil {
+		return err
+	}
+	return a.refreshFolderUnreadAfterServerFlagChange(folderObj)
+}
+
+// refreshFolderUnreadAfterServerFlagChange recounts the folder and emits the
+// updated unread count to the sidebar. Used by the server-side mark-all paths,
+// which have no local messages to recount but must still update the badge.
+func (a *App) refreshFolderUnreadAfterServerFlagChange(folderObj *folder.Folder) error {
+	unreadCount, err := a.messageStore.CountUnreadByFolder(folderObj.ID)
+	if err != nil {
+		return fmt.Errorf("failed to count unread: %w", err)
+	}
+	// For un-synced folders there are no local rows (count 0), but the folder
+	// may still show server-side unread from STATUS. Fall back to server STATUS
+	// so the badge reflects reality.
+	if unreadCount == 0 && folderObj.TotalCount > 0 {
+		statusErr := a.withIMAPRetry(folderObj.AccountID, func(conn *imap.Client) error {
+			status, sErr := conn.GetMailboxStatus(a.ctx, folderObj.Path)
+			if sErr != nil {
+				return sErr
+			}
+			unreadCount = int(status.Unseen)
+			return nil
+		})
+		if statusErr != nil {
+			log := logging.WithComponent("app.actions")
+			log.Debug().
+				Err(statusErr).
+				Str("folder", folderObj.Path).
+				Msg("Server STATUS fallback failed, using local count")
+		}
+	}
+	if err := a.folderStore.UpdateCounts(folderObj.ID, folderObj.TotalCount, unreadCount); err != nil {
+		return fmt.Errorf("failed to update folder counts: %w", err)
+	}
+	wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
+		folderObj.ID: unreadCount,
 	})
+	return nil
 }
 
 // MarkAsUnread marks messages as unread

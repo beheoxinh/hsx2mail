@@ -7,6 +7,7 @@
   import {
     securityOptions,
     syncIntervalOptions,
+    secondarySyncIntervalOptions,
   } from '$lib/config/providers'
   // @ts-ignore - wailsjs path
   import { account, certificate, app } from '../../../../../wailsjs/go/models'
@@ -78,6 +79,9 @@
     onSyncAllFoldersChange: (value: boolean) => void
     syncFoldersEnabled: boolean
     onSyncFoldersEnabledChange: (value: boolean) => void
+    /** Secondary folder polling interval in minutes (0 = automatic). */
+    secondarySyncInterval: string
+    onSecondarySyncIntervalChange: (value: string) => void
   }
 
   let {
@@ -121,6 +125,8 @@
     onSyncAllFoldersChange,
     syncFoldersEnabled = $bindable(),
     onSyncFoldersEnabledChange,
+    secondarySyncInterval = $bindable('0'),
+    onSecondarySyncIntervalChange,
   }: Props = $props()
 
   // SMTP "Same as incoming server" toggle. Derived from the persisted
@@ -234,6 +240,12 @@
   function getSyncIntervalLabel(value: string): string {
     const numValue = Number(value)
     const option = syncIntervalOptions.find(opt => opt.value === numValue)
+    return option ? $_(option.labelKey) : `${value} min`
+  }
+
+  function getSecondarySyncIntervalLabel(value: string): string {
+    const numValue = Number(value)
+    const option = secondarySyncIntervalOptions.find(opt => opt.value === numValue)
     return option ? $_(option.labelKey) : `${value} min`
   }
 
@@ -594,6 +606,28 @@
       </Select.Root>
       <p class="text-xs text-muted-foreground">
         {$_('account.checkNewMailHelp')}
+      </p>
+    </div>
+
+    <div class="space-y-2">
+      <Label>{$_('account.secondarySyncInterval')}</Label>
+      <Select.Root
+        value={secondarySyncInterval}
+        onValueChange={(v) => { secondarySyncInterval = v; onSecondarySyncIntervalChange(v) }}
+      >
+        <Select.Trigger>
+          <Select.Value placeholder="Select">
+            {getSecondarySyncIntervalLabel(secondarySyncInterval)}
+          </Select.Value>
+        </Select.Trigger>
+        <Select.Content>
+          {#each secondarySyncIntervalOptions as opt (opt.value)}
+            <Select.Item value={String(opt.value)} label={$_(opt.labelKey)} />
+          {/each}
+        </Select.Content>
+      </Select.Root>
+      <p class="text-xs text-muted-foreground">
+        {$_('account.secondarySyncIntervalHelp')}
       </p>
     </div>
 

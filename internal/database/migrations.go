@@ -1315,4 +1315,16 @@ var migrations = []Migration{
 			ALTER TABLE accounts ADD COLUMN oauth_stable_id TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		Version: 41,
+		SQL: `
+			-- Per-account background polling interval for secondary folders
+			-- (Trash/Spam/Archive/All Mail/Starred/Important). These change far
+			-- less often than INBOX but still need periodic reconciliation so
+			-- unread badges stay accurate. 0 = derive from sync_interval
+			-- (clamped to a 10-minute floor) so existing accounts need no change.
+
+			ALTER TABLE accounts ADD COLUMN secondary_sync_interval INTEGER NOT NULL DEFAULT 0;
+		`,
+	},
 }

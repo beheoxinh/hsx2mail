@@ -324,6 +324,25 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 	s.log.Debug().Str("account", acc.Name).Msg("Scheduled sync completed")
 }
 
+// secondarySyncIntervalFor returns the polling interval for secondary folders
+// (Trash/Spam/Archive/All Mail/Starred/Important) from the account's setting.
+// The user-configurable SecondarySyncInterval wins when set; otherwise we
+// derive one from SyncInterval with a 10-minute floor so secondary folders
+// still refresh promptly without polling as hard as INBOX.
+func secondarySyncIntervalFor(acc *account.Account) time.Duration {
+	if acc != nil && acc.SecondarySyncInterval > 0 {
+		return time.Duration(acc.SecondarySyncInterval) * time.Minute
+	}
+	// Default: same cadence as INBOX but never faster than 10 minutes.
+	if acc != nil && acc.SyncInterval > 0 {
+		if acc.SyncInterval < 10 {
+			return 10 * time.Minute
+		}
+		return time.Duration(acc.SyncInterval) * time.Minute
+	}
+	return 10 * time.Minute
+}
+
 // syncAdditionalFolders syncs subscribed or all folders beyond Inbox,
 // based on the account's SyncAllFolders setting.
 func (s *Scheduler) syncAdditionalFolders(ctx context.Context, acc *account.Account, inbox *folder.Folder) {
@@ -333,6 +352,8 @@ func (s *Scheduler) syncAdditionalFolders(ctx context.Context, acc *account.Acco
 		return
 	}
 
+	secondaryInterval := secondarySyncIntervalFor(acc)
+
 	// Filter out Inbox (already synced) and limit to 2 concurrent syncs
 	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -341,6 +362,19 @@ func (s *Scheduler) syncAdditionalFolders(ctx context.Context, acc *account.Acco
 		// Skip Inbox — already synced above with notification handling
 		if inbox != nil && f.ID == inbox.ID {
 			continue
+		}
+
+		// Throttle secondary folders: skip when synced recently. Core folders
+		// (Drafts, Sent) sync every tick since they can change on our own actions.
+		if folder.IsSecondaryFolder(f.Type) && f.LastSync != nil &&
+			time.Since(*f.LastSync) < secondaryInterval {
+			continue
+		}
+
+		// A folder synced in a previous tick may be stale (mode switch, full sync
+		// default flip). Re-read so the LastSync throttle above sees fresh state.
+		if fresh, gErr := s.folderStore.Get(f.ID); gErr == nil && fresh != nil {
+			f = fresh
 		}
 
 		// Check context
@@ -354,7 +388,15 @@ func (s *Scheduler) syncAdditionalFolders(ctx context.Context, acc *account.Acco
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			if syncErr := s.engine.SyncMessages(ctx, acc.ID, f.ID, acc.SyncPeriodDays, false); syncErr != nil {
+			// Secondary folders on first-ever sync: pull the full window. Gmail's
+			// All Mail / Important may hold old messages the 30-day default would
+			// miss on first sync. Subsequent syncs are incremental (modseq) so the
+			// period only bounds the initial fetch.
+			syncDays := acc.SyncPeriodDays
+			if folder.IsSecondaryFolder(f.Type) && f.LastSync == nil {
+				syncDays = 0
+			}
+			if syncErr := s.engine.SyncMessages(ctx, acc.ID, f.ID, syncDays, false); syncErr != nil {
 				if ctx.Err() == nil {
 					s.log.Warn().Err(syncErr).Str("folder", f.Path).Msg("Failed to sync additional folder")
 				}
@@ -376,9 +418,11 @@ func (s *Scheduler) getAccountSyncFolders(acc *account.Account) ([]*folder.Folde
 	if acc.SyncFoldersEnabled {
 		return s.folderStore.ListSubscribed(acc.ID)
 	}
-	// Default: core folders only (backward compatible)
+	// Default: core folders + secondary folders (Trash/Spam/Archive/All/Starred/Important)
+	// so unread badges and message content stay accurate for every folder.
 	coreTypes := []folder.Type{folder.TypeInbox, folder.TypeDrafts, folder.TypeSent}
 	var folders []*folder.Folder
+	byID := make(map[string]bool)
 	for _, ft := range coreTypes {
 		f, err := s.folderStore.GetByType(acc.ID, ft)
 		if err != nil {
@@ -386,6 +430,19 @@ func (s *Scheduler) getAccountSyncFolders(acc *account.Account) ([]*folder.Folde
 		}
 		if f != nil {
 			folders = append(folders, f)
+			byID[f.ID] = true
+		}
+	}
+	// Append secondary folders (dedupe)
+	allFolders, listErr := s.folderStore.List(acc.ID)
+	if listErr == nil {
+		for _, f := range allFolders {
+			if byID[f.ID] {
+				continue
+			}
+			if folder.IsSecondaryFolder(f.Type) {
+				folders = append(folders, f)
+			}
 		}
 	}
 	return folders, nil

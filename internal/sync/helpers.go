@@ -141,6 +141,8 @@ func convertFolderType(t imapPkg.FolderType) folder.Type {
 		return folder.TypeAll
 	case imapPkg.FolderTypeStarred:
 		return folder.TypeStarred
+	case imapPkg.FolderTypeImportant:
+		return folder.TypeImportant
 	default:
 		return folder.TypeFolder
 	}
