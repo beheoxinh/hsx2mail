@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Build-time variables injected via ldflags
@@ -48,12 +49,92 @@ var (
 	GoogleTestingClientSecret string
 )
 
-
 func init() {
 	if GoogleClientID != "" {
 		return
 	}
 	loadFromShim()
+	if GoogleClientID == "" {
+		loadFromEnvFile()
+	}
+}
+
+// loadFromEnvFile reads OAuth credentials from the project root .env when
+// running un-stripped (go run / go test / IDE run config). Production builds
+// carry ldflags and never reach this path. The fallback keeps dev and test
+// behavior consistent with `make build` without leaking secrets into the
+// repository — .env is gitignored (see .gitignore).
+func loadFromEnvFile() {
+	// Walk up to a few parent directories to find the repo root .env.
+	// go test runs the test binary with the package dir as cwd, so the
+	// .env can sit one or two levels up; the IDE run config uses the
+	// project root as cwd, so it sits right here.
+	for _, dir := range rootCandidates() {
+		lines, err := os.ReadFile(filepath.Join(dir, ".env"))
+		if err != nil {
+			continue
+		}
+		applyEnvLines(lines)
+		return
+	}
+}
+
+// rootCandidates returns the current working directory and up to two
+// ancestors, in order of most specific to least.
+func rootCandidates() []string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for i := 0; i < 3; i++ {
+		out = append(out, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return out
+}
+
+// applyEnvLines parses key=value lines (skipping comments/blanks) and fills
+// the package credential vars when they are still empty.
+func applyEnvLines(lines []byte) {
+	for _, line := range strings.Split(string(lines), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		kv := strings.SplitN(line, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		key, val := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		val = strings.Trim(val, `"'`)
+		switch key {
+		case "GOOGLE_CLIENT_ID":
+			if GoogleClientID == "" {
+				GoogleClientID = val
+			}
+		case "GOOGLE_CLIENT_SECRET":
+			if GoogleClientSecret == "" {
+				GoogleClientSecret = val
+			}
+		case "MICROSOFT_CLIENT_ID":
+			if MicrosoftClientID == "" {
+				MicrosoftClientID = val
+			}
+		case "GOOGLE_TESTING_CLIENT_ID":
+			if GoogleTestingClientID == "" {
+				GoogleTestingClientID = val
+			}
+		case "GOOGLE_TESTING_CLIENT_SECRET":
+			if GoogleTestingClientSecret == "" {
+				GoogleTestingClientSecret = val
+			}
+		}
+	}
 }
 
 func loadFromShim() {

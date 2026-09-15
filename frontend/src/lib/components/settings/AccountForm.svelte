@@ -469,6 +469,19 @@
     step = 'details'
   }
 
+  // Prefill the account form from the OAuth result email. The user has already
+  // signed in with their provider, so re-typing their address here is pointless.
+  // Setting `email` triggers the effect below which fills `username`/`name`.
+  $effect(() => {
+    if (oauthStore.flowState === 'success' && oauthStore.flowResult?.email) {
+      if (!email) email = oauthStore.flowResult.email
+      if (!displayName) {
+        const localPart = oauthStore.flowResult.email.split('@')[0]
+        displayName = localPart.charAt(0).toUpperCase() + localPart.slice(1)
+      }
+    }
+  })
+
   // Auto-detect provider and auto-fill fields when email changes
   $effect(() => {
     if (!email) return
