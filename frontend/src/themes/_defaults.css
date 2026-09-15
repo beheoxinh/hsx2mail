@@ -1,0 +1,22 @@
+/* Avatar palette — global defaults (Tailwind *-500 colors with white initials).
+   Themes may override any subset of these in their own [data-theme="..."] block
+   to fit their visual identity. */
+@layer base {
+  :root {
+    --avatar-fg: 0 0% 100%;
+    --avatar-1:  0 84% 60%;    /* red */
+    --avatar-2:  25 95% 53%;   /* orange */
+    --avatar-3:  38 92% 50%;   /* amber */
+    --avatar-4:  48 96% 53%;   /* yellow */
+    --avatar-5:  142 71% 45%;  /* green */
+    --avatar-6:  160 84% 39%;  /* emerald */
+    --avatar-7:  173 80% 40%;  /* teal */
+    --avatar-8:  189 95% 43%;  /* cyan */
+    --avatar-9:  199 89% 48%;  /* sky */
+    --avatar-10: 217 91% 60%;  /* blue */
+    --avatar-11: 239 84% 67%;  /* indigo */
+    --avatar-12: 258 90% 66%;  /* violet */
+    --avatar-13: 271 91% 65%;  /* purple */
+    --avatar-14: 330 81% 60%;  /* pink */
+  }
+}

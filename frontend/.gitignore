@@ -1,0 +1,3 @@
+# Hunspell dictionaries copied from the dictionary-* npm packages by
+# scripts/copy-dictionaries.mjs (predev/prebuild). Regenerated, not committed.
+public/spellcheck/

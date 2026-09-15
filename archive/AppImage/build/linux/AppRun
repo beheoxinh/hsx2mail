@@ -1,0 +1,87 @@
+#!/bin/sh
+# AppRun script for Aerion AppImage
+# Sets up environment to use bundled webkit2gtk helpers
+
+SELF=$(readlink -f "$0")
+HERE=${SELF%/*}
+
+# Detect architecture
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)
+        LIB_ARCH="x86_64-linux-gnu"
+        ;;
+    aarch64)
+        LIB_ARCH="aarch64-linux-gnu"
+        ;;
+esac
+
+# WebKit has hardcoded path /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/
+# Use bwrap to bind mount the webkit helpers
+if [ -n "$LIB_ARCH" ] && [ -d "${HERE}/usr/lib/${LIB_ARCH}" ] && command -v bwrap >/dev/null 2>&1; then
+    # Point GDK pixbuf to namespace paths (inside bwrap, files are at /usr/lib/...)
+    export GDK_PIXBUF_MODULEDIR="/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0/2.10.0/loaders"
+    export GDK_PIXBUF_MODULE_FILE="/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+
+    # DON'T set LD_LIBRARY_PATH for the main app - it causes child processes
+    # (xdg-open, flatpak, etc.) to use wrong libraries. The webkit helper
+    # wrappers will set it themselves when needed.
+
+    # Check if system has the webkit directory specifically
+    if [ -d "/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" ]; then
+        # Webkit directory exists (Ubuntu/Debian) - only bind webkit to avoid library conflicts
+        exec bwrap \
+            --dev-bind / / \
+            --bind "$HOME" "$HOME" \
+            --bind /tmp /tmp \
+            --bind "${HERE}/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" "/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" \
+            --unsetenv LD_LIBRARY_PATH \
+            "${HERE}/usr/bin/aerion" "$@"
+    elif [ -f "/etc/debian_version" ] || grep -qi "^ID.*=.*debian\|^ID.*=.*ubuntu\|^ID_LIKE.*=.*debian\|^ID_LIKE.*=.*ubuntu" /etc/os-release 2>/dev/null; then
+        # Debian/Ubuntu-based distro without webkit2gtk-4.1 installed
+        # Use tmpfs to create webkit dir without hiding system libs
+        export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+        exec bwrap \
+            --dev-bind / / \
+            --bind "$HOME" "$HOME" \
+            --bind /tmp /tmp \
+            --tmpfs "/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" \
+            --ro-bind "${HERE}/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" "/usr/lib/${LIB_ARCH}/webkit2gtk-4.1" \
+            --ro-bind "${HERE}/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0" "/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0" \
+            "${HERE}/usr/bin/aerion" "$@"
+    elif [ -f "/run/ostree-booted" ] || [ -f "/ostree/repo/config" ] || \
+         [ -f "/etc/NIXOS" ] || [ -f "/run/current-system/nixos-version" ] || \
+         [ -f "/usr/share/abroot/abroot.json" ] || \
+         grep -qi "immutable\|atomic\|silverblue\|kinoite\|microos\|endless" /etc/os-release 2>/dev/null || \
+         [ -f "/etc/arch-release" ] || grep -qi "^ID.*=.*arch\|^ID_LIKE.*=.*arch" /etc/os-release 2>/dev/null; then
+        # Immutable distro (Silverblue/Kinoite/EndlessOS/NixOS/Vanilla OS/MicroOS/etc)
+        # OR Arch-based distro (Arch/Manjaro/CachyOS/EndeavourOS/etc)
+        # Use tmpfs overlay for /usr/lib to avoid permission issues when creating arch-specific subdirs
+        exec bwrap \
+            --ro-bind / / \
+            --dev-bind /dev /dev \
+            --proc /proc \
+            --bind "$HOME" "$HOME" \
+            --tmpfs /usr/lib \
+            --ro-bind "${HERE}/usr/lib" /usr/lib \
+            --unsetenv LD_LIBRARY_PATH \
+            "${HERE}/usr/bin/aerion" "$@"
+    else
+        # Regular distro (Void/etc) - bind entire arch lib directory
+        exec bwrap \
+            --dev-bind / / \
+            --bind "$HOME" "$HOME" \
+            --bind /tmp /tmp \
+            --bind "${HERE}/usr/lib/${LIB_ARCH}" "/usr/lib/${LIB_ARCH}" \
+            --unsetenv LD_LIBRARY_PATH \
+            "${HERE}/usr/bin/aerion" "$@"
+    fi
+else
+    # No bwrap - fallback, use AppImage paths
+    export WEBKIT_EXEC_PATH="${HERE}/usr/lib/${LIB_ARCH}/webkit2gtk-4.1"
+    export GDK_PIXBUF_MODULEDIR="${HERE}/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0/2.10.0/loaders"
+    export GDK_PIXBUF_MODULE_FILE="${HERE}/usr/lib/${LIB_ARCH}/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+    # Don't set LD_LIBRARY_PATH to avoid conflicts with child processes
+    unset LD_LIBRARY_PATH
+    exec "${HERE}/usr/bin/aerion" "$@"
+fi

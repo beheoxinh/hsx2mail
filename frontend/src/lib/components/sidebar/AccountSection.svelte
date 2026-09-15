@@ -1,0 +1,195 @@
+<script lang="ts">
+  import Icon from '@iconify/svelte'
+  // @ts-ignore - wailsjs path
+  import { account, folder } from '../../../../wailsjs/go/models'
+  import FolderTreeItem from './FolderTreeItem.svelte'
+  import { _ } from '$lib/i18n'
+
+  interface Props {
+    account: account.Account
+    folders: folder.FolderTree[]
+    loading: boolean
+    syncing: boolean
+    error: string | null
+    selectedFolderId: string
+    selectionSource: 'unified' | 'account' | null
+    isHeaderFocused?: boolean
+    isExpanded?: boolean
+    syncError?: { folderId: string; error: string } | null
+    onFolderSelect?: (accountId: string, folderId: string, folderPath: string, folderName: string, folderType: string) => void
+    onToggleExpanded?: () => void
+    onEdit?: () => void
+    onDelete?: () => void
+    onSync?: () => void
+    collapsedFolders?: Record<string, boolean>
+    onToggleFolderCollapse?: (folderId: string) => void
+    onMessagesMoved?: () => void
+  }
+
+  let {
+    account: acc,
+    folders,
+    loading,
+    syncing,
+    error,
+    selectedFolderId,
+    selectionSource,
+    isHeaderFocused = false,
+    isExpanded = true,
+    syncError = null,
+    onFolderSelect,
+    onToggleExpanded,
+    onEdit,
+    onDelete,
+    onSync,
+    collapsedFolders = {},
+    onToggleFolderCollapse,
+    onMessagesMoved,
+  }: Props = $props()
+
+  let showMenu = $state(false)
+
+  // Toggle expand/collapse via callback
+  function toggleExpanded() {
+    onToggleExpanded?.()
+  }
+
+  function selectFolder(f: folder.Folder) {
+    onFolderSelect?.(acc.id, f.id, f.path, f.name, f.type)
+  }
+
+  function toggleMenu(e: MouseEvent) {
+    e.stopPropagation()
+    showMenu = !showMenu
+  }
+
+  function handleEdit() {
+    showMenu = false
+    onEdit?.()
+  }
+
+  function handleDelete() {
+    showMenu = false
+    onDelete?.()
+  }
+
+  function handleSync() {
+    showMenu = false
+    onSync?.()
+  }
+
+  // Close menu when clicking outside
+  function handleClickOutside() {
+    showMenu = false
+  }
+</script>
+
+<svelte:window onclick={handleClickOutside} />
+
+<div class="mb-2">
+  <!-- Account Header -->
+  <div class="relative group">
+    <button
+      class="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium text-foreground hover:bg-muted/50 transition-colors {isHeaderFocused ? 'bg-muted ring-1 ring-primary/50' : ''}"
+      data-sidebar-item="account-header"
+      data-account-id={acc.id}
+      onclick={toggleExpanded}
+    >
+      <Icon
+        icon={isExpanded ? 'mdi:chevron-down' : 'mdi:chevron-right'}
+        class="w-4 h-4 text-muted-foreground"
+      />
+      <Icon icon="mdi:email-outline" class="w-4 h-4" />
+      <span class="truncate flex-1 text-left">{acc.name}</span>
+
+      {#if syncing}
+        <Icon icon="mdi:sync" class="w-4 h-4 animate-spin text-muted-foreground" />
+      {:else if error}
+        <span title={error}>
+          <Icon icon="mdi:alert-circle" class="w-4 h-4 text-destructive" />
+        </span>
+      {/if}
+    </button>
+
+    <!-- Account Menu Button -->
+    <button
+      class="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-muted transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+      onclick={toggleMenu}
+    >
+      <Icon icon="mdi:dots-vertical" class="w-4 h-4 text-muted-foreground" />
+    </button>
+
+    <!-- Dropdown Menu -->
+    {#if showMenu}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="absolute right-2 top-full mt-1 z-50 min-w-[160px] bg-popover border border-border rounded-md shadow-md py-1"
+        role="menu"
+        tabindex="-1"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
+          onclick={handleSync}
+        >
+          <Icon icon="mdi:sync" class="w-4 h-4" />
+          <span>{$_('sidebar.syncNow')}</span>
+        </button>
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors"
+          onclick={handleEdit}
+        >
+          <Icon icon="mdi:pencil-outline" class="w-4 h-4" />
+          <span>{$_('sidebar.editAccount')}</span>
+        </button>
+        <div class="my-1 border-t border-border"></div>
+        <button
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+          onclick={handleDelete}
+        >
+          <Icon icon="mdi:delete-outline" class="w-4 h-4" />
+          <span>{$_('sidebar.deleteAccount')}</span>
+        </button>
+      </div>
+    {/if}
+  </div>
+
+  <!-- Sync Error — bar removed; spinner in header + phase label in bottom status convey sync state. -->
+  {#if syncError}
+    <div class="px-3 py-1.5">
+      <div class="flex items-center gap-2 text-destructive">
+        <Icon icon="mdi:alert-circle" class="w-4 h-4 flex-shrink-0" />
+        <p class="text-xs">{$_('sidebar.syncError')}</p>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Folder List -->
+  {#if isExpanded}
+    <div class="ml-4">
+      {#if loading}
+        <div class="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+          <Icon icon="mdi:loading" class="w-4 h-4 animate-spin" />
+          <span>{$_('sidebar.loadingFolders')}</span>
+        </div>
+      {:else if folders.length === 0}
+        <div class="px-3 py-2 text-sm text-muted-foreground">
+          {$_('sidebar.noFoldersSynced')}
+        </div>
+      {:else}
+        {#each folders as tree (tree.folder?.id ?? 'unknown')}
+          <FolderTreeItem
+            {tree}
+            accountId={acc.id}
+            {selectedFolderId}
+            {selectionSource}
+            {collapsedFolders}
+            {onMessagesMoved}
+            onFolderSelect={(f) => selectFolder(f)}
+            onToggleCollapse={(folderId) => onToggleFolderCollapse?.(folderId)}
+          />
+        {/each}
+      {/if}
+    </div>
+  {/if}
+</div>

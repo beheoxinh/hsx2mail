@@ -1,0 +1,40 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "$lib/*": ["src/lib/*"],
+      "$/*": ["src/*"],
+      "$extensions/*": ["../extensions/*"],
+      "$wailsjs/*": ["wailsjs/*"],
+      "@iconify/*": ["node_modules/@iconify/*"],
+      "svelte": ["node_modules/svelte/src/runtime/index"],
+      "svelte/*": ["node_modules/svelte/*"],
+      "svelte-i18n": ["node_modules/svelte-i18n"]
+    },
+    "allowJs": true,
+    "checkJs": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.js",
+    "src/**/*.svelte",
+    "../extensions/**/frontend/**/*.ts",
+    "../extensions/**/frontend/**/*.svelte"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ]
+}
