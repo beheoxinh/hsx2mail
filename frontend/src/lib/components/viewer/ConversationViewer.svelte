@@ -1680,6 +1680,11 @@
                           <Icon icon="mdi:shield-check" class="w-4 h-4 flex-shrink-0" />
                           <span>{$_('viewer.smimeSignedBy', { values: { email: (msg.hasSMIME ? smimeResults[msg.id]?.smimeSignerEmail : msg.smimeSignerEmail) || (msg.hasSMIME ? smimeResults[msg.id]?.smimeSignerSubject : msg.smimeSignerSubject) || $_('viewer.unknown').toLowerCase() } })}</span>
                         </div>
+                      {:else if (msg.hasSMIME ? smimeResults[msg.id]?.smimeStatus : msg.smimeStatus) === 'sender_mismatch'}
+                        <div class="flex items-center gap-2 px-3 py-2 mb-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md text-sm text-red-700 dark:text-red-300">
+                          <Icon icon="mdi:shield-alert" class="w-4 h-4 flex-shrink-0" />
+                          <span>{$_('viewer.smimeSenderMismatch', { values: { email: (msg.hasSMIME ? smimeResults[msg.id]?.smimeSignerEmail : msg.smimeSignerEmail) || $_('viewer.unknown').toLowerCase() } })}</span>
+                        </div>
                       {:else if (msg.hasSMIME ? smimeResults[msg.id]?.smimeStatus : msg.smimeStatus) === 'unknown_signer'}
                         <div class="flex items-center gap-2 px-3 py-2 mb-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md text-sm text-amber-700 dark:text-amber-300">
                           <Icon icon="mdi:shield-alert" class="w-4 h-4 flex-shrink-0" />
@@ -1726,8 +1731,13 @@
                       <!-- PGP Signature Banner -->
                       {#if pgpResults[msg.id]?.pgpStatus === 'signed'}
                         <div class="flex items-center gap-2 px-3 py-2 mb-4 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-md text-sm text-green-700 dark:text-green-300">
-                          <Icon icon="mdi:key-check" class="w-4 h-4 flex-shrink-0" />
+                          <Icon icon="mdi:shield-key-outline" class="w-4 h-4 flex-shrink-0" />
                           <span>{$_('viewer.pgpSignedBy', { values: { email: pgpResults[msg.id]?.pgpSignerEmail || $_('viewer.unknown').toLowerCase() } })}</span>
+                        </div>
+                      {:else if pgpResults[msg.id]?.pgpStatus === 'signer_mismatch'}
+                        <div class="flex items-center gap-2 px-3 py-2 mb-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md text-sm text-red-700 dark:text-red-300">
+                          <Icon icon="mdi:key-alert" class="w-4 h-4 flex-shrink-0" />
+                          <span>{$_('viewer.pgpSignerMismatch', { values: { email: pgpResults[msg.id]?.pgpSignerEmail || $_('viewer.unknown').toLowerCase() } })}</span>
                         </div>
                       {:else if pgpResults[msg.id]?.pgpStatus === 'unknown_key'}
                         <div class="flex items-center gap-2 px-3 py-2 mb-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md text-sm text-amber-700 dark:text-amber-300">

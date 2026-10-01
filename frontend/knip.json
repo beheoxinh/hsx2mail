@@ -2,9 +2,58 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/composerMain.ts",
-    "index.html",
-    "composer.html"
+    "src/ComposerApp.svelte",
+    "src/lib/spellcheck/*.ts",
+    "src/**/*.test.ts"
   ],
+  // Scope is frontend/src only, on purpose. The extension bundles under
+  // ../extensions/*/frontend are mounted by the Go host at runtime (see
+  // app/extension_ui.go), so they have no static entry point for knip to trace.
+  // Including them turns every extension component into an "unused file".
+  //
+  // The consequence is that an export used ONLY by an extension looks dead;
+  // `consumePendingDeepLink` is one such case (calendar/CalendarPane.svelte).
+  // It is listed under `ignore` rather than deleted, and re-checked by hand when
+  // the extension API changes.
   "project": ["src/**/*.{ts,svelte}"],
-  "includeEntryExports": false
+  "includeEntryExports": false,
+
+  // Re-export barrels are API surface, not dead code. knip reports each
+  // re-exported name separately and cannot see the object that consumes them,
+  // so `KEY.PANE_FOCUS_NEXT` used in App.svelte looks like an unused export of
+  // shortcuts.ts. Same for the shadcn-style component barrels under
+  // components/ui: every part is exported so a component can be composed
+  // anywhere, and deleting the unreferenced ones would break that.
+  //
+  // Two more shapes produce false "unused export" reports here:
+  //   - a store accessor imported under an alias
+  //     (import { setRunBackground as updateRunBackgroundStore } from
+  //     '$lib/stores/settings.svelte'), which knip does not follow;
+  //   - a helper consumed only by an extension bundle, which has no static
+  //     entry point (see the project scope note below).
+  //
+  // The checks that are worth gating on are unused dependencies and unused
+  // files, which knip reports accurately here; both are currently clean.
+  "ignoreExportsUsedInFile": true,
+  "ignore": [
+    "src/lib/components/ui/**",
+    "src/lib/components/kit/**",
+    "src/lib/keyboard/shortcuts.ts",
+    "src/lib/config/providers.ts",
+    "src/lib/stores/extensionDeepLink.svelte.ts",
+    "src/lib/stores/extensionShortcuts.svelte.ts",
+    "src/lib/stores/settings.svelte.ts"
+  ],
+
+  // Not imported by any source file, but required:
+  //  - dictionary-*  : copied into public/spellcheck by scripts/copy-dictionaries.mjs
+  //  - date-fns-tz   : referenced from vite.config.ts, which knip does not analyse
+  //  - tslib         : transitive peer of bits-ui -> @internationalized/date
+  //  - @tanstack/virtual-core : imported for its types only (`import type`)
+  "ignoreDependencies": [
+    "dictionary-*",
+    "date-fns-tz",
+    "tslib",
+    "@tanstack/virtual-core"
+  ]
 }

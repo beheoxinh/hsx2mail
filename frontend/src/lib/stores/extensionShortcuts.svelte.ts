@@ -31,34 +31,29 @@ interface Registration {
 const registry = new Map<string, Registration[]>()
 
 /**
- * Register a keyboard shortcut scoped to an extension. The shortcut only
- * fires via dispatchExtensionShortcut when `getActiveExtension() === extensionId`.
+ * Register a keyboard shortcut on behalf of an extension.
  *
- * Returns an Unregister function — call it from onDestroy / the component's
- * cleanup to avoid stale handlers piling up across mount/unmount cycles.
- *
- * Multiple shortcuts per extension are supported; they're evaluated in
- * registration order, first match wins.
+ * Registrations are scoped by extension id and only fire while that extension
+ * is the active pane, so an extension's shortcut cannot shadow a mail shortcut or
+ * fire while the user is looking at another tab. The returned function removes
+ * the registration and must be called on teardown, otherwise a closed extension
+ * keeps handling keys.
  */
 export function registerExtensionShortcut(
   extensionId: string,
   predicate: ShortcutPredicate,
   handler: ShortcutHandler,
 ): Unregister {
-  const reg: Registration = { predicate, handler }
-  const existing = registry.get(extensionId)
-  if (existing) {
-    existing.push(reg)
-  }
-  if (!existing) {
-    registry.set(extensionId, [reg])
-  }
+  const list = registry.get(extensionId) ?? []
+  const registration: Registration = { predicate, handler }
+  list.push(registration)
+  registry.set(extensionId, list)
+
   return () => {
-    const list = registry.get(extensionId)
-    if (!list) return
-    const idx = list.indexOf(reg)
-    if (idx >= 0) list.splice(idx, 1)
-    if (list.length === 0) registry.delete(extensionId)
+    const current = registry.get(extensionId)
+    if (!current) return
+    const at = current.indexOf(registration)
+    if (at >= 0) current.splice(at, 1)
   }
 }
 

@@ -59,3 +59,6 @@ npm-debug.log*
 # Cache
 .cache/
 .gitnexus
+
+# Toolchain stamp written by ./prepare.sh (machine-local, regenerated)
+.prepare-stamp

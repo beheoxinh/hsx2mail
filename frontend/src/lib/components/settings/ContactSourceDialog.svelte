@@ -10,7 +10,7 @@
   import { _ } from '$lib/i18n'
   import { contactSourcesStore, type LinkedAccountInfo } from '$lib/stores/contactSources.svelte'
   // @ts-ignore - wailsjs runtime
-  import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime'
+  import { EventsOn } from '../../../../wailsjs/runtime/runtime'
   // @ts-ignore - wailsjs path
   import {
     DiscoverCardDAVAddressbooks,
@@ -187,48 +187,50 @@
   })
 
   // Set up OAuth event listeners
+  let unsubscribeOAuthStarted: (() => void) | null = null
+  let unsubscribeOAuthSuccess: (() => void) | null = null
+  let unsubscribeOAuthError: (() => void) | null = null
+  let unsubscribeOAuthCancelled: (() => void) | null = null
+
   $effect(() => {
+    // Cleanup previous listeners
+    unsubscribeOAuthStarted?.()
+    unsubscribeOAuthSuccess?.()
+    unsubscribeOAuthError?.()
+    unsubscribeOAuthCancelled?.()
+
     if (open) {
       // Listen for OAuth started — captures the auth URL so the user can copy
-      // it as a fallback if the browser doesn't open automatically.
-      EventsOn('contact-source-oauth:started', (data: { provider: string; authURL?: string }) => {
-        oauthAuthURL = data.authURL ?? null
+      // it as a fallback if the browser doesn't open automatically
+      unsubscribeOAuthStarted = EventsOn('contact-source-oauth:started', (data: { provider: string; authURL?: string }) => {
+        oauthAuthURL = data.authURL || null
       })
 
-      // Listen for OAuth success
-      EventsOn('contact-source-oauth:success', (data: { provider: string; email: string }) => {
-        oauthInProgress = false
-        oauthAuthURL = null
-        oauthEmail = data.email
-        if (!name) {
-          name = `${data.provider === 'google' ? 'Google' : 'Microsoft'} Contacts (${data.email})`
+      unsubscribeOAuthSuccess = EventsOn('contact-source-oauth:success', (data: { provider: string; email?: string }) => {
+        if (data.provider) {
+          addToast({ type: 'success', message: `Connected ${data.provider} Contacts${data.email ? ` (${data.email})` : ''}` })
         }
-      })
-
-      // Listen for OAuth error
-      EventsOn('contact-source-oauth:error', (data: { error: string }) => {
-        oauthInProgress = false
-        oauthAuthURL = null
-        console.error('OAuth failed:', data.error)
-        addToast({ type: 'error', message: $_('toast.oauthFailed') })
-      })
-
-      // Listen for OAuth cancelled
-      EventsOn('contact-source-oauth:cancelled', () => {
+        // Re-run discovery so the addressbook list reflects the new token.
+        void handleDiscover()
         oauthInProgress = false
         oauthAuthURL = null
       })
 
-      return () => {
-        EventsOff('contact-source-oauth:started')
-        EventsOff('contact-source-oauth:success')
-        EventsOff('contact-source-oauth:error')
-        EventsOff('contact-source-oauth:cancelled')
-      }
+      unsubscribeOAuthError = EventsOn('contact-source-oauth:error', (data: { error: string; provider?: string }) => {
+        console.error(data)
+        oauthInProgress = false
+        oauthAuthURL = null
+        addToast({ type: 'error', message: $_('contactSource.oauthError') })
+      })
+
+      unsubscribeOAuthCancelled = EventsOn('contact-source-oauth:cancelled', () => {
+        oauthInProgress = false
+        oauthAuthURL = null
+      })
     }
   })
 
-  // Copy-link fallback for OAuth waiting state
+// Copy-link fallback for OAuth waiting state
   let oauthAuthURL = $state<string | null>(null)
   let oauthLinkCopied = $state(false)
   let oauthCopiedResetTimer: ReturnType<typeof setTimeout> | null = null

@@ -85,7 +85,10 @@ func NewSanitizer() *Sanitizer {
 	p.AllowElements("picture", "source")
 	p.AllowElements("map", "area")
 
-	// Allow cid: scheme for inline attachments, data: for base64, http/https for remote
+	// cid: for inline attachments, data: for base64 inline images, http/https for
+	// remote. bluemonday applies one scheme list to every URL attribute, so the
+	// navigable-attribute restriction (no data: on <a href>) is enforced in a
+	// post-pass below.
 	p.AllowURLSchemes("cid", "data", "http", "https", "mailto")
 
 	// ==========================================================================
@@ -137,7 +140,54 @@ func (s *Sanitizer) Sanitize(html string) string {
 	// and many HTML emails rely on CSS rules for proper layout
 
 	// Apply bluemonday sanitization
-	return s.policy.Sanitize(html)
+	return StripUnsafeNavigationSchemes(s.policy.Sanitize(html))
+}
+
+// navigableAttrs are the attributes that turn a click into navigation or a
+// fetch. `data:` (and any other non-allowlisted scheme) is stripped from them:
+// `data:text/html,<script>` in an href executes in this origin when clicked.
+const navigableAttrs = `href|src|action|formaction|cite|longdesc|background|poster|data|codebase|ping`
+
+var navigableAttrRe = regexp.MustCompile(`(?is)(\s(?:href|action|formaction|cite|longdesc|background|poster|data|codebase|ping)=")([^"]*)(")`)
+
+// allowedNavigationSchemes are the schemes that may survive on a navigable
+// attribute. data: is deliberately absent: inline images keep it because bluemonday
+// validates src before this pass runs, and a data: image src is inert.
+var allowedNavigationSchemes = map[string]bool{
+	"http":   true,
+	"https":  true,
+	"mailto": true,
+	"cid":    true,
+}
+
+// StripUnsafeNavigationSchemes removes non-allowlisted URL schemes from
+// navigable attributes. Called after bluemonday, which applies a single scheme
+// list to every URL attribute and therefore cannot express "data: on img src
+// but never on an href".
+func StripUnsafeNavigationSchemes(html string) string {
+	return navigableAttrRe.ReplaceAllStringFunc(html, func(match string) string {
+		groups := navigableAttrRe.FindStringSubmatch(match)
+		if len(groups) != 4 {
+			return match
+		}
+		value := strings.TrimSpace(groups[2])
+		// Only an "<scheme>:rest" value names a scheme. A relative URL and a
+		// bare anchor name are returned untouched by the branches below, so
+		// nothing here needs a default.
+		var scheme string
+		if i := strings.IndexByte(value, ':'); i >= 0 {
+			scheme = value[:i]
+		} else if i := strings.IndexAny(value, "/?#"); i >= 0 {
+			// Relative URL — not a scheme, keep it.
+			return match
+		} else {
+			return match // bare word, e.g. an anchor name
+		}
+		if allowedNavigationSchemes[strings.ToLower(scheme)] {
+			return match
+		}
+		return groups[1] + groups[3]
+	})
 }
 
 // SanitizeWithRemoteImageBlocking sanitizes HTML and replaces remote images with placeholders

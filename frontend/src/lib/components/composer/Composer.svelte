@@ -7,17 +7,21 @@
   // @ts-ignore - Wails generated imports
   import { smtp, account, app } from '../../../../wailsjs/go/models'
   // @ts-ignore - Wails runtime for events
-  import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime.js'
+  import { EventsOn } from '../../../../wailsjs/runtime/runtime.js'
   import { type ComposerApi, COMPOSER_API_KEY, createMainWindowApi } from '$lib/composerApi'
   import { isImageAllowedSync } from '$lib/stores/imageAllowlist.svelte'
   import { getAlwaysLoadImages } from '$lib/stores/settings.svelte'
 
-  // Attachment type from backend
+  // Attachment type from backend.
+  // Bytes normally stay in the Go staging store and only `stagingId` crosses
+  // the bridge, so `data` is empty. It is still populated for inline images
+  // (rendered as data URLs) and for legacy base64 callers.
   interface ComposerAttachment {
     filename: string
     contentType: string
     size: number
-    data: string // base64 encoded
+    stagingId?: string
+    data?: string // base64 encoded (legacy / inline only)
   }
 
   // Inline image type - for images pasted/dropped into the editor
@@ -294,6 +298,9 @@
   let syncStatus = $state<'pending' | 'synced' | 'failed'>('pending') // IMAP sync status
   let lastSavedAt = $state<Date | null>(null)
   let saveTimeoutId: ReturnType<typeof setTimeout> | null = null
+  // Held at component scope so onDestroy can reach it: declared inside onMount
+  // it was out of scope there and the unsubscribe never ran.
+  let unsubscribeDraftSync: (() => void) | null = null
   let lastContent = ''  // Track content changes to avoid unnecessary saves
 
   // Computed draft status indicator
@@ -528,15 +535,20 @@
       }
     )
 
-    // Convert ComposerAttachment to smtp.Attachment format (regular attachments)
-    // Use content_base64 (string) instead of content (number[]) to avoid
-    // pathologically slow JSON serialization of large byte arrays through Wails RPC.
+    // Convert ComposerAttachment to smtp.Attachment format (regular attachments).
+    //
+    // Staged attachments carry only their id: the bytes already live in the Go
+    // staging store, so an autosave costs one string per file instead of a
+    // base64 copy of every byte (PLAN 2-15). `data` is sent only for legacy
+    // attachments that arrived without a staging id.
     const smtpAttachments: smtp.Attachment[] = attachments.map(att => new smtp.Attachment({
       filename: att.filename,
       content_type: att.contentType,
-      content_base64: att.data,
+      content_base64: att.stagingId ? '' : att.data,
       content_id: '',
       inline: false,
+      staging_id: att.stagingId,
+      size: att.size,
     }))
 
     // Add inline images as inline attachments with Content-ID
@@ -829,7 +841,7 @@
     }, 50)
 
     // Listen for draft sync status changes from backend
-    EventsOn('draft:syncStatusChanged', (data: { draftId: string, syncStatus: string, imapUid: number, error: string }) => {
+    unsubscribeDraftSync = EventsOn('draft:syncStatusChanged', (data: { draftId: string, syncStatus: string, imapUid: number, error: string }) => {
       if (data.draftId === currentDraftId) {
         syncStatus = data.syncStatus as 'pending' | 'synced' | 'failed'
       }
@@ -980,15 +992,17 @@
     scheduleDraftSave()
   }
 
-  onDestroy(() => {
-    // Unsubscribe from draft sync events
-    EventsOff('draft:syncStatusChanged')
-    // Clear any pending save timeout
-    if (saveTimeoutId) {
-      clearTimeout(saveTimeoutId)
-    }
-    editor?.destroy()
-  })
+onDestroy(() => {
+  // Unsubscribe from draft sync event
+  if (unsubscribeDraftSync) {
+    unsubscribeDraftSync()
+  }
+  // Clear any pending save timeout
+  if (saveTimeoutId) {
+    clearTimeout(saveTimeoutId)
+  }
+  editor?.destroy()
+})
 
   // Helper to ensure proper smtp.Address object (handles both 'address' and 'email' field names)
   function toSmtpAddress(addr: any): smtp.Address {
@@ -1022,12 +1036,30 @@
     inReplyTo = initialMessage.in_reply_to
     references = initialMessage.references || []
 
-    // Restore attachments and inline images from draft/reply/forward
-    // Go []byte is serialized as base64 string via JSON, but TS type says number[]
-    // content_base64 is used for efficient Wails RPC transfer (inline images in replies/forwards)
+    // Restore attachments and inline images from draft/reply/forward.
+    //
+    // Regular attachments come back as metadata + staging_id (their bytes never
+    // crossed the bridge), so they restore with no content and the next autosave
+    // re-sends the id rather than the file. Inline images still carry base64
+    // because the editor needs their data URL, and legacy drafts come back in
+    // the old base64 form.
     let htmlBody = initialMessage.html_body || ''
     if (initialMessage.attachments?.length > 0) {
       for (const att of initialMessage.attachments) {
+        if (att.staging_id) {
+          // Staged regular attachment: no bytes, just a chip. Its id is handed
+          // straight back on save and resolved in Go at send time.
+          if (!att.inline) {
+            attachments = [...attachments, {
+              filename: att.filename,
+              contentType: att.content_type,
+              size: att.size ?? 0,
+              stagingId: att.staging_id,
+            }]
+          }
+          continue
+        }
+
         const base64Data = att.content_base64 || (att.content as unknown as string)
         if (!base64Data) continue
 
@@ -1527,12 +1559,21 @@
     }
 
     try {
+      // Bytes cross the bridge once to reach the Go staging store; from then on
+      // only the id is sent, on every autosave.
       const data = await readFileAsBase64(file)
-      attachments = [...attachments, {
-        filename: file.name,
-        contentType: file.type || 'application/octet-stream',
-        size: file.size,
+      const staged = await api.stageAttachment(
+        file.name,
+        file.type || 'application/octet-stream',
         data,
+      )
+      if (!staged) return
+      attachments = [...attachments, {
+        filename: staged.filename,
+        contentType: staged.contentType,
+        size: staged.size,
+        stagingId: staged.stagingId,
+        data: staged.data,
       }]
       scheduleDraftSave()
     } catch (err) {
@@ -1545,10 +1586,20 @@
   async function handleDroppedFilePaths(paths: string[]) {
     for (const filePath of paths) {
       try {
-        const att = await api.readFileAsAttachment(filePath)
+        // Images are read as base64 (the editor embeds them as data URLs);
+        // everything else is staged, so its bytes never cross the bridge.
+        const probe = await api.readFileAsAttachment(filePath)
+        if (!probe) continue
+        const inline = probe.contentType.startsWith('image/')
+        const att = inline
+          ? await api.readFileAsInlineImage(filePath)
+          : probe
         if (!att) continue
 
-        if (att.contentType.startsWith('image/')) {
+        // Inline images are the one case that keeps base64: the editor embeds
+        // them as data URLs, so the bytes must be here. Bounded by the 10 MB
+        // inline cap, which is why it does not need staging.
+        if (inline && att.data) {
           // Check size before inserting inline
           const imageBytes = Math.ceil((att.data.length * 3) / 4) // Estimate decoded size from base64
           if (imageBytes > MAX_INLINE_IMAGE_SIZE) {
@@ -1589,6 +1640,7 @@
           filename: att.filename,
           contentType: att.contentType,
           size: att.size,
+          stagingId: att.stagingId,
           data: att.data,
         }]
       } catch {
@@ -1695,12 +1747,21 @@
           continue
         }
         try {
+          // The bytes must cross the bridge once to reach the Go staging store.
+          // After that only the id is sent, on every autosave.
           const data = await readFileAsBase64(file)
-          newAttachments.push({
-            filename: file.name,
-            contentType: file.type || 'application/octet-stream',
-            size: file.size,
+          const staged = await api.stageAttachment(
+            file.name,
+            file.type || 'application/octet-stream',
             data,
+          )
+          if (!staged) continue
+          newAttachments.push({
+            filename: staged.filename,
+            contentType: staged.contentType,
+            size: staged.size,
+            stagingId: staged.stagingId,
+            data: staged.data,
           })
         } catch (err) {
           console.error('Failed to read dropped file:', err)
@@ -1733,6 +1794,7 @@
               filename: att.filename,
               contentType: att.contentType,
               size: att.size,
+              stagingId: att.stagingId,
               data: att.data,
             }]
           } catch {

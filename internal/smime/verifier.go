@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beheoxinh/hsx2mail/internal/crypto"
 	"github.com/rs/zerolog"
 	"go.mozilla.org/pkcs7"
 )
@@ -34,7 +35,11 @@ func NewVerifier(store *Store, log zerolog.Logger) *Verifier {
 // caches the sender cert, and returns the verification result plus the
 // unwrapped inner body (if any). If the message is not S/MIME signed or
 // verification encounters a fatal parse error, it returns (nil, nil).
-func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
+//
+// senderEmail is the message From address. A signature that verifies but whose
+// certificate belongs to somebody else is reported as StatusSenderMismatch:
+// the bytes are authentic, but they are not authentic *from this sender*.
+func (v *Verifier) VerifyAndUnwrap(raw []byte, senderEmail string) (*SignatureResult, []byte) {
 	// Parse the message to find Content-Type
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	if headerEnd == -1 {
@@ -62,7 +67,7 @@ func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
 			!strings.EqualFold(protocol, "application/x-pkcs7-signature") {
 			return nil, nil
 		}
-		return v.verifyMultipartSigned(raw, params)
+		return v.verifyMultipartSigned(raw, params, senderEmail)
 	}
 
 	// Handle application/pkcs7-mime (opaque signed)
@@ -70,7 +75,7 @@ func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
 		strings.EqualFold(mediaType, "application/x-pkcs7-mime") {
 		smimeType := params["smime-type"]
 		if strings.EqualFold(smimeType, "signed-data") {
-			return v.verifyOpaqueSigned(raw)
+			return v.verifyOpaqueSigned(raw, senderEmail)
 		}
 	}
 
@@ -78,7 +83,7 @@ func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
 }
 
 // verifyMultipartSigned handles clear-signed messages (multipart/signed)
-func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string) (*SignatureResult, []byte) {
+func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string, senderEmail string) (*SignatureResult, []byte) {
 	boundary := params["boundary"]
 	if boundary == "" {
 		return &SignatureResult{
@@ -206,13 +211,13 @@ func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string) (
 	p7.Content = signedContent
 
 	// Verify the signature
-	result := v.verifyPKCS7(p7)
+	result := v.verifyPKCS7(p7, senderEmail)
 
 	return result, signedContent
 }
 
 // verifyOpaqueSigned handles opaque signed messages (application/pkcs7-mime)
-func (v *Verifier) verifyOpaqueSigned(raw []byte) (*SignatureResult, []byte) {
+func (v *Verifier) verifyOpaqueSigned(raw []byte, senderEmail string) (*SignatureResult, []byte) {
 	// Find body after headers
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	bodyStart := headerEnd + 4
@@ -254,14 +259,14 @@ func (v *Verifier) verifyOpaqueSigned(raw []byte) (*SignatureResult, []byte) {
 		}
 	}
 
-	result := v.verifyPKCS7(p7)
+	result := v.verifyPKCS7(p7, senderEmail)
 
 	// For opaque signed, the inner content is embedded in p7.Content
 	return result, p7.Content
 }
 
 // verifyPKCS7 verifies a parsed PKCS#7 object and caches the signer cert
-func (v *Verifier) verifyPKCS7(p7 *pkcs7.PKCS7) *SignatureResult {
+func (v *Verifier) verifyPKCS7(p7 *pkcs7.PKCS7, senderEmail string) *SignatureResult {
 	// Try verification against system trust roots
 	err := p7.Verify()
 
@@ -325,6 +330,21 @@ func (v *Verifier) verifyPKCS7(p7 *pkcs7.PKCS7) *SignatureResult {
 			ErrorMessage: "self-signed certificate",
 		}
 	}
+	// Bind the identity to the message sender. A certificate that verifies but
+	// belongs to somebody else does not vouch for this From address.
+	if !crypto.SignerMatchesSender(signerEmail, senderEmail) {
+		v.log.Warn().
+			Str("signer", signerEmail).
+			Str("from", senderEmail).
+			Msg("S/MIME signature verified but the certificate is not the message sender")
+		return &SignatureResult{
+			Status:       StatusSenderMismatch,
+			SignerEmail:  signerEmail,
+			SignerName:   signerName,
+			ErrorMessage: fmt.Sprintf("signature is from %s, not %s", signerEmail, senderEmail),
+		}
+	}
+
 	return &SignatureResult{
 		Status:      StatusSigned,
 		SignerEmail: signerEmail,

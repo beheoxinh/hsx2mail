@@ -295,7 +295,13 @@ func (c *Client) loginOAuth2() error {
 	return nil
 }
 
-// Close closes the connection to the IMAP server with a graceful logout
+// Close closes the connection to the IMAP server with a graceful logout.
+//
+// The logout is bounded by closeTimeout (Phase 3 task 3-16). A server that
+// stops answering after we send LOGOUT would otherwise pin this goroutine —
+// and with it a Pool slot and, on the IDLE path, IdleManager.Stop() —
+// forever. On timeout we fall through to the same hard socket close that
+// ForceClose performs, which also releases the pending logout waiter.
 func (c *Client) Close() error {
 	if c.client == nil {
 		return nil
@@ -303,9 +309,17 @@ func (c *Client) Close() error {
 
 	c.log.Debug().Msg("Closing IMAP connection")
 
-	// Try to logout gracefully
-	if err := c.client.Logout().Wait(); err != nil {
-		c.log.Warn().Err(err).Msg("Logout failed, closing anyway")
+	// Try to logout gracefully, but never wait on the server indefinitely.
+	logout := make(chan error, 1)
+	go func() { logout <- c.client.Logout().Wait() }()
+
+	select {
+	case err := <-logout:
+		if err != nil {
+			c.log.Warn().Err(err).Msg("Logout failed, closing anyway")
+		}
+	case <-time.After(closeTimeout):
+		c.log.Warn().Dur("timeout", closeTimeout).Msg("Logout timed out, force-closing socket")
 	}
 
 	return c.client.Close()

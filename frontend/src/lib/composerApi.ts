@@ -35,6 +35,21 @@ export interface ComposerApi {
   /** Pick attachment files via native file picker */
   pickAttachmentFiles: () => Promise<app.ComposerAttachment[]>
 
+  /**
+   * Stage base64 attachment bytes in the Go-side staging store and return
+   * metadata only. Used by drag-and-drop, where the webview hands us a File
+   * rather than a path. The bytes cross the bridge once; every autosave after
+   * that sends only the returned staging id.
+   */
+  stageAttachment: (filename: string, contentType: string, base64Data: string) => Promise<app.ComposerAttachment | null>
+
+  /**
+   * Read a file for inline (cid:) embedding, returning base64 rather than a
+   * staging id. Inline images are rendered as data URLs in the composer body,
+   * so the frontend needs the bytes; they are capped at 10 MB.
+   */
+  readFileAsInlineImage: (filePath: string) => Promise<app.ComposerAttachment | null>
+
   /** Get account details */
   getAccount: (accountId: string) => Promise<account.Account>
 
@@ -118,9 +133,25 @@ export const COMPOSER_API_KEY = 'composer-api'
  * Creates the composer API implementation for the main window.
  * Uses App bindings.
  */
+
+/**
+ * Creates the composer API implementation for a detached composer window.
+ *
+ * Same surface as the main window's, but every call goes through the
+ * ComposerApp bindings: the detached process runs ComposerApp, not App, so the
+ * App bindings are simply absent there. `accountId` is the account the window was
+ * opened for; it stays in the call signatures because the interface is shared,
+ * and the backend re-derives the authoritative account from its own compose mode.
+ */
+/**
+ * Creates the composer API implementation for the main window.
+ *
+ * Uses the App bindings; a detached composer window uses
+ * createComposerWindowApi() instead, because that process runs ComposerApp.
+ * Both return the same ComposerApi shape so the composer components do not
+ * care which window they are mounted in.
+ */
 export function createMainWindowApi(): ComposerApi {
-  // Dynamic import to avoid bundling issues
-  // These will be resolved at runtime based on which entry point is used
   return {
     sendMessage: async (accountId: string, message: smtp.ComposeMessage) => {
       const { SendMessage } = await import('../../wailsjs/go/app/App.js')
@@ -139,7 +170,7 @@ export function createMainWindowApi(): ComposerApi {
 
     saveDraft: async (accountId: string, message: smtp.ComposeMessage, draftId: string) => {
       const { SaveDraft } = await import('../../wailsjs/go/app/App.js')
-      const result = await SaveDraft(accountId, message, draftId)
+      const result: any = await SaveDraft(accountId, message, draftId)
       return { id: result?.draft?.id || '', syncStatus: result?.draft?.syncStatus || 'pending' }
     },
 
@@ -151,6 +182,16 @@ export function createMainWindowApi(): ComposerApi {
     pickAttachmentFiles: async () => {
       const { PickAttachmentFiles } = await import('../../wailsjs/go/app/App.js')
       return PickAttachmentFiles()
+    },
+
+    stageAttachment: async (filename: string, contentType: string, base64Data: string) => {
+      const { StageAttachment } = await import('../../wailsjs/go/app/App.js')
+      return StageAttachment(filename, contentType, base64Data)
+    },
+
+    readFileAsInlineImage: async (filePath: string) => {
+      const { ReadFileAsInlineImage } = await import('../../wailsjs/go/app/App.js')
+      return ReadFileAsInlineImage(filePath)
     },
 
     getAccount: async (accountId: string) => {
@@ -265,11 +306,8 @@ export function createMainWindowApi(): ComposerApi {
   }
 }
 
-/**
- * Creates the composer API implementation for the detached composer window.
- * Uses ComposerApp bindings.
- */
-export function createComposerWindowApi(_accountId: string): ComposerApi {
+export function createComposerWindowApi(accountId: string): ComposerApi {
+  void accountId // bound by the backend; kept for interface symmetry
   return {
     sendMessage: async (accountId: string, message: smtp.ComposeMessage) => {
       const { SendMessage } = await import('../../wailsjs/go/app/ComposerApp.js')
@@ -286,9 +324,14 @@ export function createComposerWindowApi(_accountId: string): ComposerApi {
       return GetIdentities(accountId)
     },
 
+    // The two bridges disagree on the shape, so this is not a copy of the App
+    // version:
+    //   App.SaveDraft         -> app.DraftResult { draft: { id, syncStatus } }
+    //   ComposerApp.SaveDraft -> draft.Draft     { id, syncStatus }
+    // Normalising here keeps the ComposerApi contract identical for the composer.
     saveDraft: async (accountId: string, message: smtp.ComposeMessage, draftId: string) => {
       const { SaveDraft } = await import('../../wailsjs/go/app/ComposerApp.js')
-      const result = await SaveDraft(accountId, message, draftId || '')
+      const result: any = await SaveDraft(accountId, message, draftId)
       return { id: result?.id || '', syncStatus: result?.syncStatus || 'pending' }
     },
 
@@ -300,6 +343,16 @@ export function createComposerWindowApi(_accountId: string): ComposerApi {
     pickAttachmentFiles: async () => {
       const { PickAttachmentFiles } = await import('../../wailsjs/go/app/ComposerApp.js')
       return PickAttachmentFiles()
+    },
+
+    stageAttachment: async (filename: string, contentType: string, base64Data: string) => {
+      const { StageAttachment } = await import('../../wailsjs/go/app/ComposerApp.js')
+      return StageAttachment(filename, contentType, base64Data)
+    },
+
+    readFileAsInlineImage: async (filePath: string) => {
+      const { ReadFileAsInlineImage } = await import('../../wailsjs/go/app/ComposerApp.js')
+      return ReadFileAsInlineImage(filePath)
     },
 
     getAccount: async (accountId: string) => {
@@ -406,5 +459,10 @@ export function createComposerWindowApi(_accountId: string): ComposerApi {
       const { GetAllAccountIdentities } = await import('../../wailsjs/go/app/ComposerApp.js')
       return GetAllAccountIdentities()
     },
+
+    // openComposerWindow is intentionally absent here: spawning a second composer
+    // window is a main-window action, and ComposerApp does not expose the
+    // binding. A composer window never needs it, so the ComposerApi object it
+    // receives satisfies the type via the surrounding cast.
   }
 }

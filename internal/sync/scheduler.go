@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -21,6 +22,28 @@ type NewMailInfo struct {
 	FromEmail   string `json:"fromEmail"`
 	Count       int    `json:"count"` // Number of new messages
 }
+
+// Boot-storm control constants (Phase 3 task 3-07).
+//
+// Without these, every account is "due" on the first tick (LastSync == nil)
+// and every failing account retries every tick, so a boot with N accounts
+// opens N connections at once and a network outage turns into a N-connection
+// retry storm.
+const (
+	// MaxConcurrentAccountSyncs caps simultaneous scheduled account syncs.
+	MaxConcurrentAccountSyncs = 3
+
+	// InitialJitterWindow is the upper bound of the per-account random delay
+	// applied before the very first attempt, spreading the boot fan-out.
+	InitialJitterWindow = 30 * time.Second
+
+	// BackoffBase is the first failure backoff; each further consecutive
+	// failure doubles it.
+	BackoffBase = 2 * time.Minute
+
+	// BackoffMax caps the exponential backoff.
+	BackoffMax = 60 * time.Minute
+)
 
 // NewMailCallback is called when new mail arrives
 type NewMailCallback func(info NewMailInfo)
@@ -55,6 +78,19 @@ type Scheduler struct {
 	// Per-account cancellation for running syncs
 	syncCancels  map[string]context.CancelFunc
 	syncCancelMu sync.Mutex
+
+	// Boot-storm control (Phase 3 task 3-07).
+	//
+	// failCount/nextAttempt hold the per-account failure backoff so N accounts
+	// that all fail at boot do not retry in lockstep every tick. slots caps how
+	// many accounts may sync at once, so a boot with 20 accounts opens 2
+	// connections instead of 20. seeded marks the accounts whose initial jitter
+	// has been drawn already.
+	failCount   map[string]int
+	nextAttempt map[string]time.Time
+	seeded      map[string]bool
+	stormMu     sync.Mutex
+	slots       chan struct{}
 }
 
 // NewScheduler creates a new sync scheduler
@@ -67,6 +103,10 @@ func NewScheduler(engine *Engine, accountStore *account.Store, folderStore *fold
 		checkInterval: 1 * time.Minute, // Check every minute if any account is due
 		syncing:       make(map[string]bool),
 		syncCancels:   make(map[string]context.CancelFunc),
+		failCount:     make(map[string]int),
+		nextAttempt:   make(map[string]time.Time),
+		seeded:        make(map[string]bool),
+		slots:         make(chan struct{}, MaxConcurrentAccountSyncs),
 	}
 }
 
@@ -171,17 +211,122 @@ func (s *Scheduler) syncDueAccounts() {
 		if acc.SyncInterval <= 0 {
 			continue
 		}
-
 		// Check if sync is due for INBOX
 		if !s.isSyncDue(acc) {
 			continue
 		}
 
+		// Draw the per-account boot jitter once, before the first attempt, so
+		// N accounts starting together do not all hit the server in the same
+		// second. A failure backoff already in force wins over the jitter.
+		s.seedJitter(acc.ID)
+
+		// Phase 3 task 3-07: honour the failure backoff. This is what stops a
+		// network outage from turning into one sync attempt per account per tick.
+		if wait, blocked := s.backoffRemaining(acc.ID); blocked {
+			s.log.Debug().
+				Str("account", acc.Name).
+				Dur("retryIn", wait).
+				Msg("Account in failure backoff, skipping")
+			continue
+		}
+
 		s.log.Debug().Str("account", acc.Name).Msg("Account is due for sync")
 
+		// Cap concurrent account syncs. The slot is taken here, not inside the
+		// goroutine, so a full cap defers the account to the next tick instead
+		// of parking a goroutine that would do nothing.
+		select {
+		case s.slots <- struct{}{}:
+		default:
+			s.log.Debug().
+				Str("account", acc.Name).
+				Int("inFlight", len(s.slots)).
+				Msg("Concurrent account sync cap reached, deferring to next tick")
+			continue
+		}
+
 		// Sync in background (don't block the scheduler)
-		go s.syncAccountInbox(acc)
+		go func(a *account.Account) {
+			defer func() { <-s.slots }()
+			s.syncAccountInbox(a)
+		}(acc)
 	}
+}
+
+// seedJitter draws the one-off per-account boot delay (Phase 3 task 3-07).
+// Drawn from math/rand so N accounts waking at the same instant spread their
+// first connection over InitialJitterWindow instead of stampeding.
+func (s *Scheduler) seedJitter(accountID string) {
+	s.stormMu.Lock()
+	defer s.stormMu.Unlock()
+
+	if s.seeded[accountID] {
+		return
+	}
+	s.seeded[accountID] = true
+	s.nextAttempt[accountID] = time.Now().Add(
+		time.Duration(rand.Int63n(int64(InitialJitterWindow))))
+}
+
+// backoffRemaining reports how long an account must still wait before it may
+// be attempted, and whether it is blocked at all.
+func (s *Scheduler) backoffRemaining(accountID string) (time.Duration, bool) {
+	s.stormMu.Lock()
+	defer s.stormMu.Unlock()
+
+	wait, ok := s.nextAttempt[accountID]
+	if !ok {
+		return 0, false
+	}
+	remaining := time.Until(wait)
+	if remaining <= 0 {
+		delete(s.nextAttempt, accountID)
+		return 0, false
+	}
+	return remaining, true
+}
+
+// recordFailure arms the exponential backoff for an account. Only real sync
+// errors count — a cancellation (shutdown, or the 30-minute timeout firing)
+// leaves the schedule untouched so a restart is not punished for a user
+// action.
+func (s *Scheduler) recordFailure(accountID string) {
+	s.stormMu.Lock()
+	defer s.stormMu.Unlock()
+
+	s.failCount[accountID]++
+	backoff := BackoffBase << min(s.failCount[accountID]-1, 10)
+	if backoff > BackoffMax || backoff <= 0 {
+		backoff = BackoffMax
+	}
+	// Jitter the retry too: without it, accounts that failed together
+	// retry together and the backoff only shifts the stampede.
+	jitter := time.Duration(rand.Int63n(int64(backoff) / 4))
+	s.nextAttempt[accountID] = time.Now().Add(backoff + jitter)
+
+	s.log.Warn().
+		Str("accountID", accountID).
+		Int("consecutiveFailures", s.failCount[accountID]).
+		Dur("backoff", backoff+jitter).
+		Msg("Account sync failed, backing off")
+}
+
+// recordSuccess clears the failure backoff so the next due sync runs on the
+// account's normal schedule.
+func (s *Scheduler) recordSuccess(accountID string) {
+	s.stormMu.Lock()
+	defer s.stormMu.Unlock()
+
+	if s.failCount[accountID] == 0 {
+		return
+	}
+	s.log.Info().
+		Str("accountID", accountID).
+		Int("previousFailures", s.failCount[accountID]).
+		Msg("Account sync recovered, clearing backoff")
+	delete(s.failCount, accountID)
+	delete(s.nextAttempt, accountID)
 }
 
 // isSyncDue returns true if an account's INBOX is due for sync
@@ -248,6 +393,7 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 			return
 		}
 		s.log.Error().Err(err).Str("account", acc.Name).Msg("Failed to sync folders")
+		s.recordFailure(acc.ID)
 		return
 	}
 
@@ -255,10 +401,12 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 	inbox, err := s.folderStore.GetByType(acc.ID, folder.TypeInbox)
 	if err != nil {
 		s.log.Error().Err(err).Str("account", acc.Name).Msg("Failed to get INBOX folder")
+		s.recordFailure(acc.ID)
 		return
 	}
 	if inbox == nil {
 		s.log.Warn().Str("account", acc.Name).Msg("INBOX folder not found")
+		s.recordFailure(acc.ID)
 		return
 	}
 
@@ -276,6 +424,7 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 			return
 		}
 		s.log.Error().Err(err).Str("account", acc.Name).Msg("Failed to sync messages")
+		s.recordFailure(acc.ID)
 		// Notify completion with error so frontend clears progress
 		if s.syncCompletedCallback != nil {
 			s.syncCompletedCallback(acc.ID, inbox.ID, err)
@@ -287,6 +436,7 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 	updatedInbox, err := s.folderStore.Get(inbox.ID)
 	if err != nil {
 		s.log.Error().Err(err).Str("account", acc.Name).Msg("Failed to get updated INBOX folder")
+		s.recordFailure(acc.ID)
 		// Notify completion with error
 		if s.syncCompletedCallback != nil {
 			s.syncCompletedCallback(acc.ID, inbox.ID, err)
@@ -321,6 +471,7 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 	// Sync additional subscribed/all folders (beyond Inbox)
 	s.syncAdditionalFolders(ctx, acc, inbox)
 
+	s.recordSuccess(acc.ID)
 	s.log.Debug().Str("account", acc.Name).Msg("Scheduled sync completed")
 }
 

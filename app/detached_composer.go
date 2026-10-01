@@ -22,9 +22,9 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/oauth2"
+	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/platform"
 	"github.com/beheoxinh/hsx2mail/internal/settings"
-	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
 	"github.com/beheoxinh/hsx2mail/internal/smtp"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -151,6 +151,13 @@ func (c *ComposerApp) Startup(ctx context.Context) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to open database")
 	}
+	// A detached composer can be started before the main window has ever run
+	// (e.g. `hsx2mail --compose` straight after an upgrade). Migrate is
+	// idempotent and gated on the app's own migrations table, so running it
+	// here is safe even when the main window already migrated.
+	if err := db.Migrate(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to migrate database")
+	}
 	c.db = db
 
 	// Initialize stores
@@ -206,6 +213,7 @@ func (c *ComposerApp) Startup(ctx context.Context) {
 	c.draftOps = draftOps{
 		accountStore:   c.accountStore,
 		folderStore:    c.folderStore,
+		staging:        draft.NewStagingStore(c.paths.AttachmentStagingPath()),
 		messageStore:   c.messageStore,
 		draftStore:     c.draftStore,
 		imapPool:       c.imapPool,
@@ -856,12 +864,25 @@ func (c *ComposerApp) CloseWindow() {
 
 // PickAttachmentFiles opens a file picker dialog and returns the selected files as attachments.
 func (c *ComposerApp) PickAttachmentFiles() ([]ComposerAttachment, error) {
-	return pickAttachmentFiles(c.ctx)
+	return pickAttachmentFiles(c.ctx, c.draftOps.staging)
 }
 
-// ReadFileAsAttachment reads a file from a filesystem path and creates a ComposerAttachment.
+// ReadFileAsAttachment reads a file from a filesystem path and returns a
+// staged ComposerAttachment.
 func (c *ComposerApp) ReadFileAsAttachment(filePath string) (*ComposerAttachment, error) {
-	return readFileAsAttachment(filePath)
+	return readFileAsAttachment(c.draftOps.staging, filePath)
+}
+
+// StageAttachment stores base64 attachment bytes in the staging store and
+// returns metadata only (drag-and-drop path).
+func (c *ComposerApp) StageAttachment(filename, contentType, base64Data string) (*ComposerAttachment, error) {
+	return stageAttachmentData(c.draftOps.staging, filename, contentType, base64Data)
+}
+
+// ReadFileAsInlineImage reads a file for inline embedding, returning base64
+// rather than a staging id (see readFileAsInlineImage).
+func (c *ComposerApp) ReadFileAsInlineImage(filePath string) (*ComposerAttachment, error) {
+	return readFileAsInlineImage(filePath)
 }
 
 // ============================================================================

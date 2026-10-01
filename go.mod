@@ -3,6 +3,7 @@ module github.com/beheoxinh/hsx2mail
 go 1.25.0
 
 require (
+	fyne.io/systray v1.12.2
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/ProtonMail/go-crypto v1.4.1

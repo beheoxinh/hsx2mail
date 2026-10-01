@@ -812,7 +812,10 @@ Settings CRUD:
   DeleteSetting(key)
 
 Setting keys (từ migrations.go):
-  run_background          — Boolean: minimize to tray
+  run_background          — Boolean: keep running when the window is closed
+                            (the window is hidden, not minimized to a tray;
+                            a tray icon is created when run_background OR
+                            autostart is on — see docs/BACKGROUND.md §4)
   start_hidden            — Boolean: start minimized
   native_title_bar        — Boolean: use OS title bar
   compose_mode            — "new-window" | "inline"

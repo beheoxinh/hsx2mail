@@ -14,6 +14,17 @@ import { _ } from '$lib/i18n'
  */
 export function formatRelativeDate(date: Date): string {
   const t = get(_)
+
+  // An Invalid Date propagates: `differenceInMinutes` yields NaN, every
+  // comparison below is false, and date-fns' format() throws a RangeError. That
+  // exception escapes during render and takes the whole conversation list down
+  // for a single malformed timestamp — which is reachable, since `latestDate`
+  // comes off the wire and a server may omit or mangle it. Showing nothing for
+  // that one row is the correct degradation.
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return ''
+  }
+
   const now = new Date()
   const diffMs = now.getTime() - date.getTime()
   const diffMinutes = Math.floor(diffMs / (1000 * 60))
@@ -44,33 +55,4 @@ export function formatRelativeDate(date: Date): string {
   }
 
   return format(date, 'MMM d, yyyy')
-}
-
-/**
- * Format a date for message header display
- * Shows full date and time
- */
-export function formatMessageDate(date: Date): string {
-  const t = get(_)
-
-  if (isToday(date)) {
-    return t('date.todayAt', { values: { time: format(date, 'h:mm a') } })
-  }
-
-  if (isYesterday(date)) {
-    return t('date.yesterdayAt', { values: { time: format(date, 'h:mm a') } })
-  }
-
-  if (isThisYear(date)) {
-    return format(date, 'MMM d \'at\' h:mm a')
-  }
-
-  return format(date, 'MMM d, yyyy \'at\' h:mm a')
-}
-
-/**
- * Format a date for full display (tooltips, etc.)
- */
-export function formatFullDate(date: Date): string {
-  return format(date, 'EEEE, MMMM d, yyyy \'at\' h:mm:ss a')
 }

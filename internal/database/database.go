@@ -57,7 +57,14 @@ func Open(path string) (*DB, error) {
 	// lazily in a pool. Using _pragma in the DSN ensures every new connection gets
 	// the same configuration (busy_timeout, WAL, etc.), preventing SQLITE_BUSY
 	// errors when a pooled connection lacks busy_timeout.
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-64000)", path)
+	// _txlock=immediate makes every BEGIN acquire the write lock up front.
+	// Without it modernc/sqlite issues a plain (DEFERRED) BEGIN, so a
+	// transaction that starts as a read and later upgrades to a write can fail
+	// with SQLITE_BUSY_SNAPSHOT — busy_timeout does not help there, because
+	// SQLite refuses to block a lock upgrade that would invalidate a snapshot
+	// another connection is holding. That surfaced as "database is locked"
+	// whenever sync (writer) and the UI's read queries overlapped.
+	dsn := fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-64000)&_pragma=wal_autocheckpoint(1000)&_pragma=journal_size_limit(67108864)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -118,11 +125,26 @@ func (db *DB) Close() error {
 
 // Checkpoint runs a WAL checkpoint to merge the write-ahead log back into
 // the main database file. This prevents the WAL file from growing too large.
-// Uses PASSIVE mode which checkpoints as much as possible without blocking.
+//
+// Uses TRUNCATE, not PASSIVE. PASSIVE copies whatever pages it can but leaves
+// the -wal file at its high-water size, so the file grew monotonically for the
+// life of the process. TRUNCATE additionally resets the file to zero bytes.
+// It is safe here because this only ever runs from the idle maintenance
+// ticker: a busy reader just makes the checkpoint a no-op for that pass rather
+// than blocking a sync writer.
 func (db *DB) Checkpoint() error {
-	_, err := db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
-	if err != nil {
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("failed to checkpoint WAL: %w", err)
+	}
+	return nil
+}
+
+// Optimize refreshes SQLite's query-planner statistics. Cheap, and it keeps
+// ANALYZE data fresh enough that the v42 partial/expression indexes keep being
+// chosen after the data distribution changes.
+func (db *DB) Optimize() error {
+	if _, err := db.Exec("PRAGMA optimize"); err != nil {
+		return fmt.Errorf("failed to optimize database: %w", err)
 	}
 	return nil
 }
@@ -142,6 +164,9 @@ func (db *DB) StartCheckpointRoutine(ctx context.Context) {
 			if err := db.Checkpoint(); err != nil {
 				db.log.Error().Err(err).Msg("Periodic WAL checkpoint failed")
 				continue
+			}
+			if err := db.Optimize(); err != nil {
+				db.log.Debug().Err(err).Msg("Periodic PRAGMA optimize failed")
 			}
 			db.log.Debug().Msg("Periodic WAL checkpoint completed")
 		case <-ctx.Done():
@@ -219,6 +244,22 @@ func (db *DB) applyMigration(m Migration) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Re-check the marker INSIDE the transaction. Migrate() read the current
+	// version before opening this tx, so a second process (a detached composer
+	// window opening the same database) can slip in and apply the same
+	// migration first. With _txlock=immediate the two transactions serialize,
+	// but the loser would then re-run the ALTER TABLE and die with
+	// "duplicate column name" — taking the composer window down at startup.
+	var alreadyApplied int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM migrations WHERE version = ?`, m.Version,
+	).Scan(&alreadyApplied); err != nil {
+		return fmt.Errorf("failed to re-check migration %d: %w", m.Version, err)
+	}
+	if alreadyApplied > 0 {
+		return tx.Rollback()
+	}
 
 	// Execute migration
 	if _, err := tx.Exec(m.SQL); err != nil {

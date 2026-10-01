@@ -353,7 +353,7 @@
   <!-- Incoming Mail (IMAP) -->
   <div class="space-y-4">
     <h3 class="text-sm font-medium flex items-center gap-2">
-      <Icon icon="mdi:email-receive-outline" class="w-4 h-4" />
+      <Icon icon="mdi:inbox-arrow-down-outline" class="w-4 h-4" />
       {$_('account.incomingMail')}
     </h3>
 
@@ -476,7 +476,7 @@
   <!-- Outgoing Mail (SMTP) -->
   <div class="space-y-4">
     <h3 class="text-sm font-medium flex items-center gap-2">
-      <Icon icon="mdi:email-send-outline" class="w-4 h-4" />
+      <Icon icon="mdi:tray-arrow-down" class="w-4 h-4" />
       {$_('account.outgoingMail')}
     </h3>
 

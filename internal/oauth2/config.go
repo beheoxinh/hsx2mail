@@ -3,6 +3,7 @@ package oauth2
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,19 +138,38 @@ func applyEnvLines(lines []byte) {
 	}
 }
 
-func loadFromShim() {
-	// Search for the shim binary in known locations
-	paths := []string{
-		"/app/lib/hsx2mail/hsx2mail-creds", // Flatpak
+// shimCandidatePaths lists where the OAuth credential helper may live.
+//
+// Only paths that actually exist are returned. The Flatpak location is added
+// conditionally because including it unconditionally made every launch on a
+// normal install log "oauth2: refusing to run credential helper
+// /app/lib/hsx2mail/hsx2mail-creds: no such file or directory" — a warning that
+// reads like a failure even though the co-located helper loads successfully
+// right afterwards.
+func shimCandidatePaths() []string {
+	var paths []string
+
+	const flatpakHelper = "/app/lib/hsx2mail/hsx2mail-creds"
+	if _, err := os.Stat(flatpakHelper); err == nil {
+		paths = append(paths, flatpakHelper)
 	}
 
-	// Also check next to the main binary
+	// Next to the main binary — how install.sh lays it out.
 	if exe, err := os.Executable(); err == nil {
 		paths = append(paths, filepath.Join(filepath.Dir(exe), "hsx2mail-creds"))
 	}
+	return paths
+}
+
+func loadFromShim() {
+	paths := shimCandidatePaths()
 
 	for _, p := range paths {
-		if _, err := os.Stat(p); err != nil {
+		if err := validateHelperBinary(p); err != nil {
+			// Refuse to exec a helper we cannot vouch for. Silently continuing
+			// would either skip a valid helper or, worse, run an attacker-planted
+			// one that decides which OAuth client the app uses.
+			log.Printf("oauth2: refusing to run credential helper %s: %v", p, err)
 			continue
 		}
 		out, err := exec.Command(p).Output()

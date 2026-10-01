@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
 	"github.com/beheoxinh/hsx2mail/internal/folder"
 	imapPkg "github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/message"
+	"github.com/emersion/go-imap/v2"
 )
 
 // applyFlagsToMessage sets boolean flag fields on a Message from IMAP flags

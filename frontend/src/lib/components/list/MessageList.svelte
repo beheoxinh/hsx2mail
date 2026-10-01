@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
   import Icon from '@iconify/svelte'
+  import { createVirtualizer } from '@tanstack/svelte-virtual'
+  import type { VirtualItem } from '@tanstack/virtual-core'
+  import { reconcileWindow, threadIdsInRange, indexOfThread, nextIndexAfterRemoval } from './virtualWindow'
   import ConversationRow from './ConversationRow.svelte'
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '$lib/utils'
@@ -766,9 +769,12 @@
     if (event?.shiftKey) {
       const start = lastClickedIndex !== null ? Math.min(lastClickedIndex, index) : index
       const end = lastClickedIndex !== null ? Math.max(lastClickedIndex, index) : index
+      // Indices are into activeList (the full list), never the mounted window.
+      // threadIdsInRange clamps, so an anchor left over from before a reload
+      // cannot select nothing.
       const newChecked = new Set(checkedThreadIds)
-      for (let i = start; i <= end; i++) {
-        newChecked.add(activeList[i].threadId)
+      for (const id of threadIdsInRange(activeList, start, end)) {
+        newChecked.add(id)
       }
       checkedThreadIds = newChecked
       return
@@ -872,7 +878,9 @@
             hideViewer()
           }
           if (currentIndex >= 0 && searchResults.length > 0) {
-            const newIndex = Math.min(currentIndex, searchResults.length - 1)
+            // Clamp into the shortened list: after a delete the row that slid
+            // into the removed one's place must be selected, not past the end.
+            const newIndex = nextIndexAfterRemoval(currentIndex, searchResults.length)
             const conv = searchResults[newIndex]
             if (conv) {
               if (isNarrow) {
@@ -909,7 +917,7 @@
           hideViewer()
         }
         if (currentIndex >= 0 && conversations.length > 0) {
-          const newIndex = Math.min(currentIndex, conversations.length - 1)
+          const newIndex = nextIndexAfterRemoval(currentIndex, conversations.length)
           const conv = conversations[newIndex]
           if (conv) {
             if (isNarrow) {
@@ -964,7 +972,9 @@
   // Get current selected index
   function getSelectedIndex(): number {
     if (!selectedThreadId) return -1
-    return activeList.findIndex(c => c.threadId === selectedThreadId)
+    // Index into the FULL list, never the mounted window: only ~10 rows are
+    // mounted, so a DOM-derived index would be meaningless here.
+    return indexOfThread(activeList, selectedThreadId)
   }
 
   // Select previous message (exposed for keyboard navigation)
@@ -1180,8 +1190,7 @@
     if (!selectedThreadId || !listContainerRef) return
     const index = activeList.findIndex(c => c.threadId === selectedThreadId)
     if (index < 0) return
-    const rows = listContainerRef.querySelectorAll('[data-conversation-row]')
-    const row = rows[index] as HTMLElement | undefined
+    const row = findRowElement(index)
     if (!row) return
     const rect = row.getBoundingClientRect()
     row.dispatchEvent(new MouseEvent('contextmenu', {
@@ -1258,8 +1267,109 @@
       })
   }
 
+  // Virtualized conversation list ------------------------------------------
+  // Rows are variable height (subject/snippet wrap), so estimateSize is only a
+  // starting guess. Every mounted row registers itself through the measureRow
+  // action below, which hands the real DOM node to the virtualizer so heights
+  // are measured on mount and kept in sync by its ResizeObserver.
+  const ROW_HEIGHT_ESTIMATE: Record<string, number> = {
+    micro: 64,
+    compact: 80,
+    standard: 96,
+    large: 112,
+  }
+
+  // Stable identity per conversation, matching the keyed-each key used before
+  // virtualization so Svelte reuses the same row components across reloads.
+  function convRowKey(conv: message.Conversation | undefined): string {
+    if (!conv) return 'missing-row'
+    return conv.threadId + '-' + ((conv as any).accountId || accountId || '')
+  }
+
+  // The rendered window and its spacer height are plain $state instead of direct
+  // getVirtualItems() calls in the template: the virtualizer can notify its store
+  // synchronously from inside getVirtualItems() and from measureElement(), and
+  // writing state during a template evaluation is a Svelte error.
+  let virtualRows = $state<readonly VirtualItem[]>([])
+  // Plain (non-reactive) mirror of the last applied window, used only for change
+  // detection inside the effect below.
+  let lastWindow: readonly VirtualItem[] = []
+  let virtualSize = $state(0)
+  let virtualizerSignature = ''
+
+  const rowVirtualizer = createVirtualizer<HTMLDivElement, HTMLElement>({
+    getScrollElement: () => listContainerRef,
+    count: 0,
+    estimateSize: () => ROW_HEIGHT_ESTIMATE[getMessageListDensity()] ?? 96,
+    getItemKey: (index) => convRowKey(conversations[index]),
+    overscan: 8,
+  })
+
+  // The virtualizer only owns the conversation branch; search results render
+  // their own (non-virtualized) list, so the count drops to 0 while searching.
+  const virtualCount = $derived(isSearchMode ? 0 : conversations.length)
+
+  $effect.pre(() => {
+    const signature = `${listContainerRef ? 1 : 0}:${virtualCount}`
+    if (signature === virtualizerSignature) return
+    virtualizerSignature = signature
+    $rowVirtualizer.setOptions({ count: virtualCount })
+  })
+
+  $effect(() => {
+    // setOptions never notifies the store, so the count and the scroll element
+    // are read here as well: without them a count change would leave the
+    // previous window rendered. Scrolling and measuring do notify, which is what
+    // re-runs this effect as the window moves.
+    void virtualCount
+    void listContainerRef
+    const next = $rowVirtualizer.getVirtualItems()
+    const nextSize = $rowVirtualizer.getTotalSize()
+
+    // Reconcile against a plain (non-reactive) copy of what is on screen.
+    // Comparing against the $state array would make this effect read its own
+    // output and re-trigger itself; comparing only length + first key is what
+    // previously let a middle-of-window replacement render stale rows. See
+    // virtualWindow.ts and its tests.
+    const reconciled = reconcileWindow(next, lastWindow)
+    if (reconciled.changed) {
+      lastWindow = reconciled.rows
+      virtualRows = reconciled.rows
+    }
+    if (nextSize !== virtualSize) virtualSize = nextSize
+  })
+
+  // Svelte action applied to each mounted row wrapper. The virtualizer reads the
+  // row index from the data-index attribute, records the node's real height and
+  // observes it for resizes. Measuring is deferred out of the render phase so the
+  // virtualizer's synchronous notification never lands inside a block effect; the
+  // destroy hook prunes rows that scrolled out of the window.
+  function measureRow(node: HTMLElement) {
+    queueMicrotask(() => $rowVirtualizer.measureElement(node))
+    return {
+      destroy() {
+        queueMicrotask(() => $rowVirtualizer.measureElement(null))
+      },
+    }
+  }
+
+  function findRowElement(index: number): HTMLElement | null {
+    if (!listContainerRef) return null
+    if (!isSearchMode) {
+      return listContainerRef.querySelector<HTMLElement>(`[data-index="${index}"]`)
+    }
+    const rows = listContainerRef.querySelectorAll<HTMLElement>('[data-conversation-row]')
+    return rows[index] ?? null
+  }
+
   // Scroll to a specific index in the list
   function scrollToIndex(index: number) {
+    // Conversation rows are virtualized: scroll the virtualizer so rows that
+    // are not yet mounted get positioned correctly instead of the live DOM.
+    if (!isSearchMode) {
+      $rowVirtualizer.scrollToIndex(index, { align: 'auto', behavior: 'smooth' })
+      return
+    }
     if (!listContainerRef) return
 
     const rows = listContainerRef.querySelectorAll('[data-conversation-row]')
@@ -1545,7 +1655,15 @@
           {#each serverSearchResults as result, index (result.threadId + '-' + index)}
             {@const resultAccountId = result.accountId || accountId}
             {@const resultFolderId = result.folderId || folderId}
-            <ConversationRow
+            <!--
+              The wrapper carries the same addressing attributes as a
+              virtualized row. Without them findRowElement() and the
+              scrollToIndex() fallback query an empty NodeList in search mode,
+              so keyboard navigation and "select the next result after a
+              delete" silently did nothing while searching.
+            -->
+            <div data-conversation-row data-index={index}>
+              <ConversationRow
               conversation={result}
               density={getMessageListDensity()}
               selected={selectedThreadId === result.threadId}
@@ -1560,9 +1678,10 @@
               onSelect={(e) => selectConversation(result.threadId, index, e)}
               onCheck={(checked, e) => handleCheck(result.threadId, checked, index, e)}
               onClearSelection={clearSelection}
-              onActionComplete={handleActionComplete}
-              {onReply}
-            />
+                onActionComplete={handleActionComplete}
+                {onReply}
+              />
+            </div>
           {/each}
 
           <!-- Show all results button (when results are capped) -->
@@ -1678,32 +1797,45 @@
         </button>
       </div>
     {:else}
-      {#each conversations as conv, index (conv.threadId + '-' + (conv.accountId || accountId || ''))}
-        {@const convAccountId = (conv as any).accountId || accountId}
-        {@const convFolderId = (conv as any).folderId || folderId}
-        {@const convAccountColor = (conv as any).accountColor || ''}
-        {@const convAccountName = (conv as any).accountName || ''}
-        <ConversationRow
-          conversation={conv}
-          density={getMessageListDensity()}
-          selected={selectedThreadId === conv.threadId}
-          checked={checkedThreadIds.has(conv.threadId)}
-          accountId={isUnifiedView ? convAccountId : accountId!}
-          folderId={isUnifiedView ? convFolderId : folderId!}
-          {folderType}
-          {selectedMessageIds}
-          selectedIsStarred={!selectedHasUnstarred}
-          selectedIsRead={!selectedHasUnread}
-          showAccountIndicator={isUnifiedView}
-          accountColor={convAccountColor}
-          accountName={convAccountName}
-          onSelect={(e) => selectConversation(conv.threadId, index, e)}
-          onCheck={(checked, e) => handleCheck(conv.threadId, checked, index, e)}
-          onClearSelection={clearSelection}
-          onActionComplete={handleActionComplete}
-          {onReply}
-        />
-      {/each}
+      <!-- Virtualized conversation rows: only the visible window is mounted.
+           Each row is measured in the DOM (use:measureRow) and absolutely
+           positioned inside the total-size spacer. -->
+      <div style="height: {virtualSize}px; position: relative; width: 100%">
+        {#each virtualRows as row (row.key)}
+          {@const conv = conversations[row.index]}
+          {@const convAccountId = (conv as any).accountId || accountId}
+          {@const convFolderId = (conv as any).folderId || folderId}
+          {@const convAccountColor = (conv as any).accountColor || ''}
+          {@const convAccountName = (conv as any).accountName || ''}
+          <div
+            data-index={row.index}
+            use:measureRow
+            class="absolute top-0 left-0 w-full"
+            style="transform: translateY({row.start}px)"
+          >
+            <ConversationRow
+              conversation={conv}
+              density={getMessageListDensity()}
+              selected={selectedThreadId === conv.threadId}
+              checked={checkedThreadIds.has(conv.threadId)}
+              accountId={isUnifiedView ? convAccountId : accountId!}
+              folderId={isUnifiedView ? convFolderId : folderId!}
+              {folderType}
+              {selectedMessageIds}
+              selectedIsStarred={!selectedHasUnstarred}
+              selectedIsRead={!selectedHasUnread}
+              showAccountIndicator={isUnifiedView}
+              accountColor={convAccountColor}
+              accountName={convAccountName}
+              onSelect={(e) => selectConversation(conv.threadId, row.index, e)}
+              onCheck={(checked, e) => handleCheck(conv.threadId, checked, row.index, e)}
+              onClearSelection={clearSelection}
+              onActionComplete={handleActionComplete}
+              {onReply}
+            />
+          </div>
+        {/each}
+      </div>
 
       <!-- Load more button for pagination -->
       {#if conversations.length < totalCount}

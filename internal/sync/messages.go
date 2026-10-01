@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/beheoxinh/hsx2mail/internal/folder"
 	imapPkg "github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/message"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 // SyncMessages synchronizes messages for a folder with incremental sync support.
@@ -93,9 +92,11 @@ func (e *Engine) SyncMessages(ctx context.Context, accountID, folderID string, s
 			Uint32("new", mailbox.UIDValidity).
 			Msg("UIDValidity changed, full resync required")
 
-		// Delete all local messages and resync
-		if err := e.messageStore.DeleteByFolder(folderID); err != nil {
-			return fmt.Errorf("failed to delete messages: %w", err)
+		// Delete all local messages and record the new UIDValidity in one
+		// transaction, so a crash can never leave the folder looking like it
+		// still needs a resync (which would repeat this full refetch forever).
+		if err := e.messageStore.ResetForUIDValidityChange(folderID, mailbox.UIDValidity); err != nil {
+			return fmt.Errorf("failed to reset folder for full resync: %w", err)
 		}
 		f.UIDValidity = mailbox.UIDValidity
 		// The old modseq refers to a different universe of UIDs after a
@@ -114,7 +115,7 @@ func (e *Engine) SyncMessages(ctx context.Context, accountID, folderID string, s
 			Msg("Using date-based sync filter")
 
 		// Delete local messages older than sync period
-		deleted, err := e.messageStore.DeleteOlderThan(accountID, sinceDate)
+		deleted, err := e.messageStore.DeleteOlderThanInFolder(accountID, folderID, sinceDate)
 		if err != nil {
 			e.log.Warn().Err(err).Msg("Failed to delete old messages")
 		} else if deleted > 0 {
@@ -122,15 +123,19 @@ func (e *Engine) SyncMessages(ctx context.Context, accountID, folderID string, s
 		}
 	}
 
-	// Get local message UIDs
+	// Get local message UIDs.
+	//
+	// Both UID lists are kept as sorted slices and probed with a binary
+	// search instead of materialised into map[uint32]bool. A 100k-message
+	// folder used to allocate two hash tables on every sync cycle -- the
+	// memory and the GC pressure scaled with total mail even though the
+	// comparison itself is a sorted merge. The merge below is a single O(n+m)
+	// pass with no per-row allocation.
 	localUIDs, err := e.messageStore.GetAllUIDs(folderID)
 	if err != nil {
 		return fmt.Errorf("failed to get local UIDs: %w", err)
 	}
-	localUIDSet := make(map[uint32]bool)
-	for _, uid := range localUIDs {
-		localUIDSet[uid] = true
-	}
+	sort.Slice(localUIDs, func(i, j int) bool { return localUIDs[i] < localUIDs[j] })
 
 	// Check context before fetching UIDs
 	if ctx.Err() != nil {
@@ -176,26 +181,13 @@ func (e *Engine) SyncMessages(ctx context.Context, accountID, folderID string, s
 		return nil
 	}
 
-	remoteUIDSet := make(map[uint32]bool)
-	for _, uid := range remoteUIDs {
-		remoteUIDSet[uid] = true
-	}
+	// IMAP servers return SEARCH results in ascending UID order, but a
+	// client is not required to rely on that, so sort defensively. The
+	// server list is already sorted in practice, so this is a no-op scan.
+	sort.Slice(remoteUIDs, func(i, j int) bool { return remoteUIDs[i] < remoteUIDs[j] })
 
-	// Find new UIDs (on server but not local)
-	var newUIDs []uint32
-	for uid := range remoteUIDSet {
-		if !localUIDSet[uid] {
-			newUIDs = append(newUIDs, uid)
-		}
-	}
-
-	// Find deleted UIDs (local but not on server within sync period)
-	var deletedUIDs []uint32
-	for uid := range localUIDSet {
-		if !remoteUIDSet[uid] {
-			deletedUIDs = append(deletedUIDs, uid)
-		}
-	}
+	// One ordered pass over both sorted lists yields all three sets.
+	newUIDs, deletedUIDs, existingUIDs := diffUIDs(localUIDs, remoteUIDs)
 
 	// SAFEGUARD: Warn if we're about to delete a large percentage of messages
 	// This could indicate a problem with the sync rather than actual deletions
@@ -215,37 +207,41 @@ func (e *Engine) SyncMessages(ctx context.Context, accountID, folderID string, s
 	}
 
 	// Delete removed messages
-	for _, uid := range deletedUIDs {
-		// For Gmail: before deleting, check if the message exists in Trash or Spam.
-		// Gmail hides messages from all other IMAP views when Trash/Spam label is
-		// added, so the UID disappears from this folder's server listing even though
-		// the message isn't truly deleted. Skip local deletion to preserve it.
-		if isGmail {
-			msg, msgErr := e.messageStore.GetByUID(folderID, uid)
-			if msgErr == nil && msg != nil && msg.MessageID != "" {
-				inTrash, _ := e.messageStore.ExistsInFolder(msg.MessageID, string(folder.TypeTrash), accountID)
-				inSpam, _ := e.messageStore.ExistsInFolder(msg.MessageID, string(folder.TypeSpam), accountID)
-				if inTrash || inSpam {
-					e.log.Debug().Uint32("uid", uid).Str("messageID", msg.MessageID).
-						Msg("Gmail: skipping local delete — message hidden by Trash/Spam label")
-					continue
+	//
+	// Gmail hides a message from every other IMAP view once a Trash or Spam
+	// label is added, so the UID disappears from this folder's server listing
+	// even though the message isn't truly deleted. Resolve that for the whole
+	// batch up front — the old loop ran GetByUID + 2x ExistsInFolder per uid
+	// (3N queries) with the IMAP connection held for the duration.
+	hiddenByLabel := map[uint32]bool{}
+	if isGmail && len(deletedUIDs) > 0 {
+		info, infoErr := e.messageStore.GetDeletedUIDInfo(folderID, accountID, deletedUIDs)
+		if infoErr != nil {
+			// Without the label check we would delete live messages, so
+			// skip the whole batch rather than guess.
+			e.log.Warn().Err(infoErr).Msg("Failed to resolve Gmail Trash/Spam copies - skipping local deletes")
+		} else {
+			for uid, i := range info {
+				if len(i.SpecialFolderTypes) > 0 {
+					hiddenByLabel[uid] = true
+					e.log.Debug().Uint32("uid", uid).Str("messageID", i.MessageID).
+						Strs("folderTypes", i.SpecialFolderTypes).
+						Msg("Gmail: skipping local delete - message hidden by Trash/Spam label")
 				}
 			}
 		}
+	}
 
+	for _, uid := range deletedUIDs {
+		if hiddenByLabel[uid] {
+			continue
+		}
 		if err := e.messageStore.DeleteByUID(folderID, uid); err != nil {
 			e.log.Warn().Err(err).Uint32("uid", uid).Msg("Failed to delete message")
 		}
 	}
 
 	// Sync flags for existing messages (messages that exist both locally and on server)
-	var existingUIDs []uint32
-	for uid := range localUIDSet {
-		if remoteUIDSet[uid] {
-			existingUIDs = append(existingUIDs, uid)
-		}
-	}
-
 	// flagSyncOK gates whether the persisted HighestModSeq is allowed to
 	// advance below. Stays true on success; flipped to false if the only
 	// available flag-sync path failed. See nextModSeq in condstore.go.
@@ -812,13 +808,24 @@ func (e *Engine) fetchMessageHeaders(ctx context.Context, client *imapclient.Cli
 		// Parse flags using shared helper
 		applyFlagsToMessage(m, flags)
 
-		// Save to store immediately (don't wait for all messages)
-		if err := e.messageStore.Upsert(m); err != nil {
-			e.log.Warn().Err(err).Uint32("uid", m.UID).Msg("Failed to save message header")
-			continue
-		}
+		// Queue for a single batched write after the stream closes. Writing
+		// per message cost one WAL commit each; a 500-message folder refresh
+		// meant 500 commits contending with the FTS triggers and the pool.
 		savedMessages = append(savedMessages, m)
 		fetchedCount++
+	}
+
+	// One transaction for the whole header batch. On failure fall back to the
+	// original per-message path so a single bad row still cannot block the
+	// rest of the batch.
+	if err := e.messageStore.UpsertBatch(savedMessages); err != nil {
+		e.log.Warn().Err(err).Int("count", len(savedMessages)).
+			Msg("Batched header upsert failed, retrying one at a time")
+		for _, m := range savedMessages {
+			if upsertErr := e.messageStore.Upsert(m); upsertErr != nil {
+				e.log.Warn().Err(upsertErr).Uint32("uid", m.UID).Msg("Failed to save message header")
+			}
+		}
 	}
 
 	if err := fetchCmd.Close(); err != nil {
@@ -856,9 +863,12 @@ func (e *Engine) fetchMessageHeaders(ctx context.Context, client *imapclient.Cli
 		Int("requested", len(uids)).
 		Msg("Header fetch complete")
 
-	// Compute thread IDs after saving and reconcile related messages
+	// Compute thread IDs after saving and reconcile related messages.
+	// One batched lookup for every reference in the batch replaces the
+	// per-message FindThreadID, which issued one query per reference.
+	threadIDs := e.computeThreadIDsBatch(accountID, savedMessages)
 	for _, m := range savedMessages {
-		threadID := e.computeThreadID(accountID, m)
+		threadID := threadIDs[m.ID]
 		if threadID != "" && threadID != m.ThreadID {
 			m.ThreadID = threadID
 			if err := e.messageStore.UpdateThreadID(m.ID, threadID); err != nil {
@@ -874,6 +884,35 @@ func (e *Engine) fetchMessageHeaders(ctx context.Context, client *imapclient.Cli
 	}
 
 	return nil
+}
+
+// diffUIDs splits two ascending UID lists into new (remote only), deleted
+// (local only) and existing (present in both).
+//
+// It replaced two map[uint32]bool built per sync: for a 100k-message folder
+// those were the single largest allocations in the whole cycle, and the
+// deletion-safety guards downstream only ever needed counts and membership.
+// It also removes the non-determinism that came from ranging over a map, so
+// the delete loop always runs in ascending UID order.
+func diffUIDs(localUIDs, remoteUIDs []uint32) (newUIDs, deletedUIDs, existingUIDs []uint32) {
+	i, j := 0, 0
+	for i < len(localUIDs) && j < len(remoteUIDs) {
+		switch {
+		case localUIDs[i] < remoteUIDs[j]:
+			deletedUIDs = append(deletedUIDs, localUIDs[i])
+			i++
+		case remoteUIDs[j] < localUIDs[i]:
+			newUIDs = append(newUIDs, remoteUIDs[j])
+			j++
+		default:
+			existingUIDs = append(existingUIDs, localUIDs[i])
+			i++
+			j++
+		}
+	}
+	deletedUIDs = append(deletedUIDs, localUIDs[i:]...)
+	newUIDs = append(newUIDs, remoteUIDs[j:]...)
+	return newUIDs, deletedUIDs, existingUIDs
 }
 
 /*

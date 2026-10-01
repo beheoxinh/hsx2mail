@@ -80,4 +80,3 @@ func ImportPublicKey(data []byte) (armoredPublicKey string, key *Key, err error)
 
 	return armoredPublicKey, key, nil
 }
-

@@ -191,8 +191,14 @@ func (a *App) SetRunBackground(enabled bool) error {
 		return err
 	}
 	if !enabled {
-		return a.settingsStore.SetStartHidden(false)
+		if err := a.settingsStore.SetStartHidden(false); err != nil {
+			return err
+		}
+		return nil
 	}
+	// The window can now be closed into the background, so a hidden instance
+	// must stay reachable — create the tray icon right away.
+	a.syncTray()
 	return nil
 }
 
@@ -209,7 +215,13 @@ func (a *App) SetStartHidden(enabled bool) error {
 			return err
 		}
 	}
-	return a.settingsStore.SetStartHidden(enabled)
+	if err := a.settingsStore.SetStartHidden(enabled); err != nil {
+		return err
+	}
+	if enabled {
+		a.syncTray()
+	}
+	return nil
 }
 
 // GetAutostart returns whether Email Hub starts on login
@@ -219,21 +231,69 @@ func (a *App) GetAutostart() (bool, error) {
 
 // SetAutostart sets whether Email Hub starts on login.
 // Manages the XDG autostart .desktop file or Flatpak Background portal.
+//
+// Enabling also turns on background mode + start-hidden (Phase 3 tasks
+// 3-05 / 3-06): a session-login entry that opens a visible window defeats
+// the point of autostart. The OS-level entry is written *before* the settings
+// flag is persisted, so a failure rolls the flag back instead of leaving the
+// app claiming to autostart when nothing was installed.
 func (a *App) SetAutostart(enabled bool) error {
 	// Check current value to avoid unnecessary OS-level changes
-	// (e.g., Flatpak Background portal D-Bus calls that may fail)
+	// (e.g., Flatpak Background portal D-Bus calls that may fail).
 	current, _ := a.settingsStore.GetAutostart()
-
-	if err := a.settingsStore.SetAutostart(enabled); err != nil {
-		return err
-	}
 	if a.autostartMgr == nil || current == enabled {
 		return nil
 	}
+
+	// The autostart channel is a *background* channel: the process must come
+	// up without a window. Applied before Enable() so a failure can roll back.
+	prevRunBg, _ := a.settingsStore.GetRunBackground()
+	prevStartHidden, _ := a.settingsStore.GetStartHidden()
 	if enabled {
-		return a.autostartMgr.Enable()
+		if err := a.settingsStore.SetRunBackground(true); err != nil {
+			return err
+		}
+		if err := a.settingsStore.SetStartHidden(true); err != nil {
+			a.rollbackBackgroundSettings(prevRunBg, prevStartHidden)
+			return err
+		}
 	}
-	return a.autostartMgr.Disable()
+
+	// Install/remove the OS-level entry first (task 3-06), then persist the flag.
+	var err error
+	if enabled {
+		err = a.autostartMgr.Enable()
+	} else {
+		err = a.autostartMgr.Disable()
+	}
+	if err != nil {
+		if enabled {
+			a.rollbackBackgroundSettings(prevRunBg, prevStartHidden)
+		}
+		return err
+	}
+
+	if err := a.settingsStore.SetAutostart(enabled); err != nil {
+		// Best-effort undo so the flag and the OS entry never disagree.
+		if enabled {
+			_ = a.autostartMgr.Disable()
+		} else {
+			_ = a.autostartMgr.Enable()
+		}
+		return err
+	}
+	if enabled {
+		a.syncTray()
+	}
+	return nil
+}
+
+// rollbackBackgroundSettings restores the background flags after a failed
+// autostart change. Errors are swallowed: the caller already returns the
+// original failure and a second error would only mask it.
+func (a *App) rollbackBackgroundSettings(runBg, startHidden bool) {
+	_ = a.settingsStore.SetRunBackground(runBg)
+	_ = a.settingsStore.SetStartHidden(startHidden)
 }
 
 // GetSpellcheckEnabled returns whether composer spellcheck is on (defaults on)

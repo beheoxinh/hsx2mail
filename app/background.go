@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/beheoxinh/hsx2mail/internal/folder"
 	"github.com/beheoxinh/hsx2mail/internal/imap"
+	"github.com/beheoxinh/hsx2mail/internal/launcherbadge"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/beheoxinh/hsx2mail/internal/notification"
 	"github.com/beheoxinh/hsx2mail/internal/platform"
@@ -246,6 +248,8 @@ func (a *App) handleIdleNewMail(event imap.MailEvent) {
 						"folderId":  fID,
 					})
 				}
+				// Keep the shell badge in step with the sidebar count.
+				a.refreshLauncherBadge()
 				// Emit folder counts changed so sidebar unread badge updates
 				if updatedFolder, err := a.folderStore.Get(fID); err == nil && updatedFolder != nil {
 					wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
@@ -402,6 +406,7 @@ func (a *App) reconcileInboxFlags(accountID string, attempt int) {
 		wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
 			folderID: updated.UnreadCount,
 		})
+		a.refreshLauncherBadge()
 	}
 }
 
@@ -495,7 +500,20 @@ func (a *App) sendSystemNotification(info sync.NewMailInfo, subject, fromName, f
 	// Build notification title and body
 	var title, body string
 
-	if info.Count == 1 && subject != "" {
+	// Phase 3 task 3-14: while the session is locked the notification is
+	// rendered on the lock screen by anyone walking past. Both fields leak
+	// mail metadata (sender in the summary, subject in the body), so fall back
+	// to a bare count. The desktop may still be behind a keyring, but the
+	// content itself is not on screen.
+	if a.isSessionLocked() {
+		title = "New mail"
+		if info.Count > 1 {
+			body = strconv.Itoa(info.Count) + " new messages"
+		} else {
+			body = "1 new message"
+		}
+		log.Debug().Int("count", info.Count).Msg("Session locked, notification content suppressed")
+	} else if info.Count == 1 && subject != "" {
 		// Single message notification
 		sender := fromName
 		if sender == "" {
@@ -660,6 +678,23 @@ func (a *App) initSleepWakeMonitor(ctx context.Context) {
 	go a.processSleepWakeEvents(ctx)
 
 	log.Info().Msg("Sleep/wake monitor initialized")
+}
+
+// initSessionLockMonitor starts tracking the session lock state so new-mail
+// notifications can be redacted while the screen is locked (task 3-14).
+// Failure is non-fatal: without it notifications keep their full content.
+func (a *App) initSessionLockMonitor(ctx context.Context) {
+	log := logging.WithComponent("app.session-lock")
+
+	monitor := platform.NewSessionLockMonitor()
+	if err := monitor.Start(ctx); err != nil {
+		log.Warn().Err(err).Msg("Session lock monitor unavailable - notifications will show full content")
+		return
+	}
+	a.sessionLockMu.Lock()
+	a.sessionLock = monitor
+	a.sessionLockMu.Unlock()
+	log.Info().Msg("Session lock monitor initialized")
 }
 
 // processSleepWakeEvents handles sleep/wake events from the monitor
@@ -878,4 +913,67 @@ func (a *App) restartIDLE() {
 		}
 	}
 	log.Info().Int("accounts", len(accounts)).Msg("IDLE restarted for accounts")
+}
+
+// isSessionLocked reports whether the desktop session is currently locked, so
+// notifications can be redacted. A missing monitor means "not locked": failing
+// open would show message content on a locked screen, but only once the
+// platform has no lock signal at all, which is the safer of the two errors.
+func (a *App) isSessionLocked() bool {
+	a.sessionLockMu.RLock()
+	monitor := a.sessionLock
+	a.sessionLockMu.RUnlock()
+	if monitor == nil {
+		return false
+	}
+	return monitor.Locked()
+}
+
+// startLauncherBadge publishes the unread count to the desktop shell.
+//
+// Failure is expected and harmless: the badge is a convenience for shells that
+// implement the Unity LauncherEntry protocol, and if there is no session bus, or
+// the name is taken, the app must still start.
+func (a *App) startLauncherBadge() {
+	if a.launcherBadge != nil {
+		return
+	}
+	log := logging.WithComponent("app.badge")
+	// Must match the installed desktop file's id, including the ".desktop"
+	// suffix: the shells match the badge against Shell.App.get_id(), which keeps
+	// the suffix (see internal/launcherbadge).
+	badge := launcherbadge.New("io.github.beheoxinh.Hsx2Mail.desktop")
+	if err := badge.Start(); err != nil {
+		// Debug, not Warn: a missing badge is a cosmetic gap, not a fault.
+		log.Debug().Err(err).Msg("Shell badge unavailable; continuing without it")
+		return
+	}
+	a.launcherBadge = badge
+	a.refreshLauncherBadge()
+}
+
+// refreshLauncherBadge recomputes the total unread count across inbox folders
+// and publishes it. Safe to call often; the badge only emits on a real change.
+func (a *App) refreshLauncherBadge() {
+	if a.launcherBadge == nil {
+		return
+	}
+	count, err := a.messageStore.GetUnifiedInboxUnreadCount()
+	if err != nil {
+		// WithComponent returns a value, and zerolog's chaining methods are on
+		// *Logger, so it needs a local.
+		log := logging.WithComponent("app.badge")
+		log.Debug().Err(err).Msg("Could not read unread count for the shell badge")
+		return
+	}
+	a.launcherBadge.SetCount(count)
+}
+
+// stopLauncherBadge releases the D-Bus objects.
+func (a *App) stopLauncherBadge() {
+	if a.launcherBadge == nil {
+		return
+	}
+	a.launcherBadge.Stop()
+	a.launcherBadge = nil
 }

@@ -13,40 +13,44 @@ const (
 	StatusUnknownKey SignatureStatus = "unknown_key" // Valid sig, no matching public key
 	StatusExpiredKey SignatureStatus = "expired_key" // Valid sig, expired key
 	StatusRevokedKey SignatureStatus = "revoked_key" // Valid sig, revoked key
+	// StatusSignerMismatch means the signature verified, but the signing key
+	// identity is not the message From. A valid signature by the wrong key is
+	// not a valid signature for this sender.
+	StatusSignerMismatch SignatureStatus = "signer_mismatch"
 )
 
 // Key represents a user's imported PGP keypair
 type Key struct {
-	ID           string    `json:"id"`
-	AccountID    string    `json:"accountId"`
-	Email        string    `json:"email"`
-	KeyID        string    `json:"keyId"`        // 16-hex short key ID
-	Fingerprint  string    `json:"fingerprint"`  // 40-hex full fingerprint
-	UserID       string    `json:"userId"`        // "Name <email>" from key
-	Algorithm    string    `json:"algorithm"`
-	KeySize      int       `json:"keySize"`
+	ID           string     `json:"id"`
+	AccountID    string     `json:"accountId"`
+	Email        string     `json:"email"`
+	KeyID        string     `json:"keyId"`       // 16-hex short key ID
+	Fingerprint  string     `json:"fingerprint"` // 40-hex full fingerprint
+	UserID       string     `json:"userId"`      // "Name <email>" from key
+	Algorithm    string     `json:"algorithm"`
+	KeySize      int        `json:"keySize"`
 	CreatedAtKey *time.Time `json:"createdAtKey,omitempty"`
 	ExpiresAtKey *time.Time `json:"expiresAtKey,omitempty"`
-	IsDefault    bool      `json:"isDefault"`
-	IsExpired    bool      `json:"isExpired"` // Computed, not stored
-	HasPrivate   bool      `json:"hasPrivate"` // Computed, not stored
-	CreatedAt    time.Time `json:"createdAt"`
+	IsDefault    bool       `json:"isDefault"`
+	IsExpired    bool       `json:"isExpired"`  // Computed, not stored
+	HasPrivate   bool       `json:"hasPrivate"` // Computed, not stored
+	CreatedAt    time.Time  `json:"createdAt"`
 }
 
 // SenderKey represents a cached public key from a signed message sender or WKD lookup
 type SenderKey struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	KeyID        string    `json:"keyId"`
-	Fingerprint  string    `json:"fingerprint"`
-	UserID       string    `json:"userId"`
-	Algorithm    string    `json:"algorithm"`
-	KeySize      int       `json:"keySize"`
+	ID           string     `json:"id"`
+	Email        string     `json:"email"`
+	KeyID        string     `json:"keyId"`
+	Fingerprint  string     `json:"fingerprint"`
+	UserID       string     `json:"userId"`
+	Algorithm    string     `json:"algorithm"`
+	KeySize      int        `json:"keySize"`
 	CreatedAtKey *time.Time `json:"createdAtKey,omitempty"`
 	ExpiresAtKey *time.Time `json:"expiresAtKey,omitempty"`
-	Source       string    `json:"source"` // "message", "wkd", "manual"
-	CollectedAt  time.Time `json:"collectedAt"`
-	LastSeenAt   time.Time `json:"lastSeenAt"`
+	Source       string     `json:"source"` // "message", "wkd", "manual"
+	CollectedAt  time.Time  `json:"collectedAt"`
+	LastSeenAt   time.Time  `json:"lastSeenAt"`
 }
 
 // SignatureResult holds the verification result for a message

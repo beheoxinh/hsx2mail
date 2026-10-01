@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	goImap "github.com/emersion/go-imap/v2"
 	"github.com/beheoxinh/hsx2mail/internal/account"
 	"github.com/beheoxinh/hsx2mail/internal/draft"
 	"github.com/beheoxinh/hsx2mail/internal/folder"
@@ -16,13 +15,14 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
 	"github.com/beheoxinh/hsx2mail/internal/smtp"
+	goImap "github.com/emersion/go-imap/v2"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // draftBodyPayload is used to serialize body fields for encrypted draft storage
 type draftBodyPayload struct {
 	BodyHTML    string            `json:"bodyHtml"`
-	BodyText   string            `json:"bodyText"`
+	BodyText    string            `json:"bodyText"`
 	Attachments []smtp.Attachment `json:"attachments,omitempty"`
 }
 
@@ -54,6 +54,7 @@ type syncStatusEmitter func(status draft.SyncStatus, imapUID uint32, syncError s
 type draftOps struct {
 	accountStore   *account.Store
 	folderStore    *folder.Store
+	staging        *draft.StagingStore
 	messageStore   *message.Store
 	draftStore     *draft.Store
 	imapPool       *imap.Pool
@@ -90,20 +91,102 @@ func (ops *draftOps) getSpecialFolder(accountID string, folderType folder.Type) 
 	return ops.folderStore.GetByType(accountID, folderType)
 }
 
-// resolveAttachmentContent resolves ContentBase64 to Content for all attachments,
-// normalizing the representation for storage and processing.
-func resolveAttachmentContent(attachments []smtp.Attachment) ([]smtp.Attachment, error) {
+// resolveAttachmentContent normalizes every attachment to hold its bytes in
+// Content, so downstream MIME building and encryption only read one field.
+//
+// Three input forms are accepted, in priority order:
+//  1. StagingID set — bytes are fetched from the Go-side staging store. This
+//     is what a composer autosave sends, so a 50 MB attachment costs a
+//     64-character id on the wire instead of a 67 MB base64 string.
+//  2. ContentBase64 set — the legacy Wails RPC form. Still produced by older
+//     drafts and by callers that have not moved to staging.
+//  3. Content set directly — used by forward carry-over and by tests.
+//
+// Attachments whose staged bytes have gone missing fall through to whatever
+// inline form they still carry rather than failing the whole draft, so a
+// missing staging file degrades to a lost attachment instead of a lost draft.
+func (ops *draftOps) resolveAttachmentContent(attachments []smtp.Attachment) ([]smtp.Attachment, error) {
 	resolved := make([]smtp.Attachment, len(attachments))
 	for i, att := range attachments {
+		resolved[i] = att
+
+		if att.StagingID != "" {
+			content, err := ops.staging.Get(att.StagingID)
+			if err == nil {
+				resolved[i].Content = content
+				resolved[i].Size = len(content)
+				// Clear the id once resolved so the bytes are not fetched twice
+				// and no stale reference survives into the stored draft.
+				resolved[i].StagingID = ""
+				continue
+			}
+			log := logging.WithComponent("draft")
+			log.Warn().
+				Err(err).
+				Str("stagingID", att.StagingID).
+				Str("filename", att.Filename).
+				Msg("Staged attachment bytes unavailable, falling back to inline content")
+		}
+
 		content, err := att.ResolveContent()
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve content for %s: %w", att.Filename, err)
 		}
-		resolved[i] = att
 		resolved[i].Content = content
 		resolved[i].ContentBase64 = "" // Clear to avoid storing both
 	}
 	return resolved, nil
+}
+
+// stageAttachments moves attachment bytes into the staging store and returns
+// the metadata-only form to persist and to hand back to the frontend.
+//
+// Content that is already staged keeps its id: the digest is stable, so a
+// draft loaded with staging ids re-stages to the same id and never re-sends
+// bytes. Attachments with no id and no bytes are passed through unchanged
+// (an empty attachment still gets a chip in the UI).
+//
+// Inline attachments are deliberately left as base64: the composer renders
+// them as data URLs in the quoted body, so their bytes must be present
+// wherever the frontend can see them. They are bounded by the 10 MB inline
+// cap, which is the case that does not need optimizing.
+func (ops *draftOps) stageAttachments(attachments []smtp.Attachment) []smtp.Attachment {
+	if ops.staging == nil {
+		return attachments
+	}
+	staged := make([]smtp.Attachment, len(attachments))
+	for i, att := range attachments {
+		staged[i] = att
+
+		if att.Inline {
+			continue
+		}
+
+		if att.StagingID == "" {
+			content, err := att.ResolveContent()
+			if err != nil || len(content) == 0 {
+				continue
+			}
+			id, err := ops.staging.Put(content)
+			if err != nil {
+				// Staging is an optimization, not a correctness requirement:
+				// keep the inline bytes so the draft stays sendable.
+				log := logging.WithComponent("draft")
+				log.Warn().
+					Err(err).Str("filename", att.Filename).
+					Msg("Failed to stage attachment, keeping inline content")
+				continue
+			}
+			staged[i].StagingID = id
+			staged[i].Size = len(content)
+		}
+
+		// Drop the bytes: everything downstream either re-reads them from the
+		// staging store by id, or re-derives the id from the same content.
+		staged[i].Content = nil
+		staged[i].ContentBase64 = ""
+	}
+	return staged
 }
 
 // encryptDraftBody encrypts the draft body to self if encryption is enabled.
@@ -113,7 +196,7 @@ func (ops *draftOps) encryptDraftBody(accountID, fromEmail string, msg smtp.Comp
 
 	// Resolve ContentBase64 → Content for all attachments before processing
 	if len(msg.Attachments) > 0 {
-		resolved, err := resolveAttachmentContent(msg.Attachments)
+		resolved, err := ops.resolveAttachmentContent(msg.Attachments)
 		if err != nil {
 			return nil, err
 		}
@@ -163,9 +246,15 @@ func (ops *draftOps) encryptDraftBody(accountID, fromEmail string, msg smtp.Comp
 		result.bodyText = ""
 	}
 
-	// For non-encrypted drafts, store attachments separately
+	// For non-encrypted drafts, store attachments separately. Bytes go to the
+	// staging store and only ids + metadata are persisted, so the row stays
+	// small no matter how large the attachment is.
+	//
+	// Encrypted drafts intentionally keep their bytes inline: the whole
+	// payload is an opaque ciphertext blob, so an id reference inside it
+	// would be useless to any process that cannot reach the staging store.
 	if !result.encrypted && !result.pgpEncrypted && len(msg.Attachments) > 0 {
-		attJSON, attErr := json.Marshal(msg.Attachments)
+		attJSON, attErr := json.Marshal(ops.stageAttachments(msg.Attachments))
 		if attErr != nil {
 			log.Warn().Err(attErr).Msg("Failed to serialize draft attachments")
 		}
@@ -181,8 +270,15 @@ func (ops *draftOps) encryptDraftBody(accountID, fromEmail string, msg smtp.Comp
 // If localDraft is non-nil, updates it; otherwise creates a new draft.
 func (ops *draftOps) saveDraftToDB(accountID string, localDraft *draft.Draft, msg smtp.ComposeMessage, enc *encryptResult) (*draft.Draft, error) {
 	log := logging.WithComponent("draft")
+	// Trust boundary: this value came from the webview over the Wails bridge.
+	msg.Sanitize()
 
 	if localDraft != nil {
+		// Snapshot the row's current timestamp: the main window and a detached
+		// composer are separate processes writing this row, so the write is
+		// guarded against a save that landed after this read.
+		previousUpdatedAt := localDraft.UpdatedAt
+
 		// Update existing draft
 		localDraft.ToList = addressListToJSON(msg.To)
 		localDraft.CcList = addressListToJSON(msg.Cc)
@@ -200,7 +296,11 @@ func (ops *draftOps) saveDraftToDB(accountID string, localDraft *draft.Draft, ms
 		localDraft.AttachmentsData = enc.attachmentsData
 		localDraft.SyncStatus = draft.SyncStatusPending
 
-		if err := ops.draftStore.Update(localDraft); err != nil {
+		// UpdateContent, not Update: the sync bookkeeping columns
+		// (imap_uid, folder_id, sync_status) belong to the background
+		// syncToIMAP. Writing the in-memory snapshot back would reset
+		// imap_uid to its pre-upload value and orphan the server draft.
+		if err := ops.draftStore.UpdateContent(localDraft, previousUpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to update draft: %w", err)
 		}
 		log.Debug().Str("draftID", localDraft.ID).Bool("encrypted", enc.encrypted).Bool("pgpEncrypted", enc.pgpEncrypted).Msg("Updated existing draft")
@@ -270,6 +370,11 @@ func (ops *draftOps) deleteDraftCore(ctx context.Context, d *draft.Draft) (*fold
 		}
 	}
 
+	// NOTE: the staged blobs this draft referenced are deliberately NOT removed
+	// here. Staging ids are content-addressed (sha256), so a second draft with
+	// identical bytes shares the same file; deleting it on draft delete would
+	// silently strip that other draft's attachments. Reclamation is the startup
+	// sweep's job, and it skips anything a live draft still points at.
 	// Delete from local database
 	if err := ops.draftStore.Delete(d.ID); err != nil {
 		return draftsFolder, fmt.Errorf("failed to delete draft: %w", err)
@@ -305,16 +410,25 @@ func (ops *draftOps) syncToIMAP(ctx context.Context, localDraft *draft.Draft, ms
 
 	conn := poolConn.Client()
 
-	// Delete old IMAP draft if it exists
-	if localDraft.IMAPUID > 0 && localDraft.FolderID != "" {
-		if _, err := conn.SelectMailbox(ctx, draftsFolder.Path); err == nil {
-			if err := conn.DeleteMessageByUID(goImap.UID(localDraft.IMAPUID)); err != nil {
-				log.Warn().Err(err).Uint32("uid", localDraft.IMAPUID).Msg("Failed to delete old draft from IMAP")
-			}
-		}
-	}
+	// Remember the previous server-side copy. It is expunged only AFTER the
+	// replacement has been appended successfully: deleting it up front means a
+	// failed APPEND (or a crash between the two) leaves the user with no draft
+	// on the server at all.
+	oldIMAPUID := localDraft.IMAPUID
+	oldFolderID := localDraft.FolderID
 
-	// Build RFC822 message
+	// Build RFC822 message. Staged attachments are resolved here: by this
+	// point the bytes exist in Go and the id is all that crossed the bridge.
+	if len(msg.Attachments) > 0 {
+		resolved, resolveErr := ops.resolveAttachmentContent(msg.Attachments)
+		if resolveErr != nil {
+			log.Error().Err(resolveErr).Msg("Failed to resolve draft attachments for IMAP sync")
+			_ = ops.draftStore.UpdateSyncStatus(localDraft.ID, draft.SyncStatusFailed, 0, "", resolveErr.Error())
+			emitStatus(draft.SyncStatusFailed, 0, resolveErr.Error())
+			return nil
+		}
+		msg.Attachments = resolved
+	}
 	rawMsg, err := msg.ToRFC822()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to build RFC822 message")
@@ -419,6 +533,18 @@ func (ops *draftOps) syncToIMAP(ctx context.Context, localDraft *draft.Draft, ms
 		return nil
 	}
 
+	// The replacement exists on the server, so the previous copy is now safe
+	// to expunge. Failure here is cosmetic: the stale copy is a duplicate the
+	// next sync overwrites, and the local UID below is already the new one.
+	if oldIMAPUID > 0 && oldIMAPUID != uint32(uid) && oldFolderID != "" {
+		if _, selErr := conn.SelectMailbox(ctx, draftsFolder.Path); selErr != nil {
+			log.Warn().Err(selErr).Msg("Failed to select drafts folder to expunge previous copy")
+		} else if delErr := conn.DeleteMessageByUID(goImap.UID(oldIMAPUID)); delErr != nil {
+			log.Warn().Err(delErr).Uint32("uid", oldIMAPUID).
+				Msg("Failed to delete previous IMAP draft copy, leaving duplicate")
+		}
+	}
+
 	// Update local draft with sync status
 	if err := ops.draftStore.UpdateSyncStatus(localDraft.ID, draft.SyncStatusSynced, uint32(uid), draftsFolder.ID, ""); err != nil {
 		log.Warn().Err(err).Msg("Failed to update draft sync status")
@@ -491,7 +617,10 @@ func (ops *draftOps) toComposeMessage(d *draft.Draft) *smtp.ComposeMessage {
 		}
 	}
 
-	// For non-encrypted drafts, restore attachments from separate column
+	// For non-encrypted drafts, restore attachments from separate column.
+	// The unmarshal is dual-format: rows written before staging (PLAN 2-15)
+	// carry base64 `content` and decode straight into Content, rows written
+	// after carry `staging_id` and stay unresolved until send/sync time.
 	if !d.Encrypted && !d.PGPEncrypted && len(d.AttachmentsData) > 0 {
 		if err := json.Unmarshal(d.AttachmentsData, &attachments); err != nil {
 			log := logging.WithComponent("draft")
@@ -518,6 +647,9 @@ func (ops *draftOps) toComposeMessage(d *draft.Draft) *smtp.ComposeMessage {
 // getIdentityEmail returns the email address for the draft's identity.
 // Falls back to the account email if the identity cannot be resolved.
 func (ops *draftOps) getIdentityEmail(d *draft.Draft) string {
+	if ops.accountStore == nil {
+		return ""
+	}
 	if d.IdentityID != "" {
 		identities, err := ops.accountStore.GetIdentities(d.AccountID)
 		if err == nil {

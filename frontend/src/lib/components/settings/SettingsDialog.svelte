@@ -172,6 +172,12 @@
       await SetRunBackground(runBackground)
       await SetStartHidden(startHidden)
       await SetAutostart(autostart)
+      // Enabling autostart also turns on background mode + start-hidden in the
+      // backend, so re-read the effective values instead of trusting the local
+      // form state. Otherwise the toggles would render off while the app is
+      // actually configured to start hidden.
+      runBackground = await GetRunBackground()
+      startHidden = await GetStartHidden()
       if (language) {
         await SetLanguage(language)
       }

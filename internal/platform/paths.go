@@ -169,6 +169,12 @@ func (p *Paths) AttachmentsPath() string {
 // ExtensionsDir returns the root directory containing per-extension SQLite
 // databases at <ExtensionsDir>/<name>/data.db. Each extension owns its own
 // subdirectory; cross-extension data access goes through the v1 Core API.
+// AttachmentStagingPath returns the directory where the composer stages
+// attachment bytes so only ids cross the Wails IPC bridge (PLAN 2-15).
+func (p *Paths) AttachmentStagingPath() string {
+	return filepath.Join(p.Data, "attachments", "staging")
+}
+
 func (p *Paths) ExtensionsDir() string {
 	return filepath.Join(p.Data, "extensions")
 }

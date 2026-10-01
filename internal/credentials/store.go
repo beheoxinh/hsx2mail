@@ -8,17 +8,15 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/crypto"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/rs/zerolog"
-	gokeyring "github.com/zalando/go-keyring"
 )
 
 const serviceName = "hsx2mail"
 
 // Store provides credential storage with OS keyring and encrypted DB fallback
 type Store struct {
-	db             *sql.DB
-	encryptor      *crypto.Encryptor
-	keyringEnabled bool
-	log            zerolog.Logger
+	db        *sql.DB
+	encryptor *crypto.Encryptor
+	log       zerolog.Logger
 }
 
 // NewStore creates a new credential store
@@ -33,36 +31,17 @@ func NewStore(db *sql.DB, dataDir string) (*Store, error) {
 	}
 
 	// Test if keyring is available
-	keyringEnabled := testKeyring()
-	if keyringEnabled {
-		log.Info().Msg("OS keyring available, using as primary credential storage")
+	if err := probeKeyring(); err != nil {
+		log.Warn().Err(err).Msg("OS keyring not available, using encrypted database storage")
 	} else {
-		log.Warn().Msg("OS keyring not available, using encrypted database storage")
+		log.Info().Msg("OS keyring available, using as primary credential storage")
 	}
 
 	return &Store{
-		db:             db,
-		encryptor:      encryptor,
-		keyringEnabled: keyringEnabled,
-		log:            log,
+		db:        db,
+		encryptor: encryptor,
+		log:       log,
 	}, nil
-}
-
-// testKeyring checks if the OS keyring is available and functional
-func testKeyring() bool {
-	testKey := "hsx2mail-test-keyring-check"
-	testValue := "test"
-
-	// Try to set a test value
-	err := gokeyring.Set(serviceName, testKey, testValue)
-	if err != nil {
-		return false
-	}
-
-	// Clean up test value
-	_ = gokeyring.Delete(serviceName, testKey)
-
-	return true
 }
 
 // SetPassword stores a password for an account
@@ -71,16 +50,15 @@ func (s *Store) SetPassword(accountID, password string) error {
 		return nil
 	}
 
-	// Try OS keyring first if available
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, accountID, password)
-		if err == nil {
-			s.log.Debug().Str("account_id", accountID).Msg("Password stored in OS keyring")
-			// Clear any fallback storage
-			s.clearDBPassword(accountID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store in OS keyring, using fallback")
+	// Try OS keyring first. A runtime keyring failure fails the write instead
+	// of quietly relocating the password into the SQLite file.
+	if inKeyring, err := s.keyringSet(accountID, password); err != nil {
+		return fmt.Errorf("password not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("account_id", accountID).Msg("Password stored in OS keyring")
+		// Clear any fallback storage
+		s.clearDBPassword(accountID)
+		return nil
 	}
 
 	// Fallback to encrypted database storage
@@ -103,15 +81,12 @@ func (s *Store) SetPassword(accountID, password string) error {
 
 // GetPassword retrieves a password for an account
 func (s *Store) GetPassword(accountID string) (string, error) {
-	// Try OS keyring first if available
-	if s.keyringEnabled {
-		password, err := gokeyring.Get(serviceName, accountID)
-		if err == nil {
-			return password, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading from OS keyring, trying fallback")
-		}
+	// Try OS keyring first. A live-but-erroring keyring is surfaced, not
+	// silently answered from the DB copy.
+	if password, found, err := s.keyringGet(accountID); err != nil {
+		return "", err
+	} else if found {
+		return password, nil
 	}
 
 	// Try fallback encrypted database storage
@@ -144,9 +119,7 @@ func (s *Store) GetPassword(accountID string) (string, error) {
 // DeletePassword removes a password for an account
 func (s *Store) DeletePassword(accountID string) error {
 	// Delete from OS keyring
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, accountID)
-	}
+	s.keyringDelete(accountID)
 
 	// Delete from database
 	s.clearDBPassword(accountID)
@@ -185,14 +158,12 @@ func (s *Store) SetSMTPPassword(accountID, password string) error {
 		return nil
 	}
 
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, smtpPasswordKeyringKey(accountID), password)
-		if err == nil {
-			s.log.Debug().Str("account_id", accountID).Msg("SMTP password stored in OS keyring")
-			s.clearDBSMTPPassword(accountID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store SMTP password in OS keyring, using fallback")
+	if inKeyring, err := s.keyringSet(smtpPasswordKeyringKey(accountID), password); err != nil {
+		return fmt.Errorf("credential not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("account_id", accountID).Msg("SMTP password stored in OS keyring")
+		s.clearDBSMTPPassword(accountID)
+		return nil
 	}
 
 	encrypted, err := s.encryptor.Encrypt(password)
@@ -214,14 +185,10 @@ func (s *Store) SetSMTPPassword(accountID, password string) error {
 // separate "<accountID>:smtp" keyring slot and the
 // encrypted_smtp_password column.
 func (s *Store) GetSMTPPassword(accountID string) (string, error) {
-	if s.keyringEnabled {
-		password, err := gokeyring.Get(serviceName, smtpPasswordKeyringKey(accountID))
-		if err == nil {
-			return password, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading SMTP password from OS keyring, trying fallback")
-		}
+	if password, found, err := s.keyringGet(smtpPasswordKeyringKey(accountID)); err != nil {
+		return "", err
+	} else if found {
+		return password, nil
 	}
 
 	var encrypted sql.NullString
@@ -248,9 +215,7 @@ func (s *Store) GetSMTPPassword(accountID string) (string, error) {
 // DeleteSMTPPassword removes the SMTP-specific password for an account.
 // Idempotent.
 func (s *Store) DeleteSMTPPassword(accountID string) error {
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, smtpPasswordKeyringKey(accountID))
-	}
+	s.keyringDelete(smtpPasswordKeyringKey(accountID))
 	s.clearDBSMTPPassword(accountID)
 	return nil
 }
@@ -260,9 +225,11 @@ func (s *Store) clearDBSMTPPassword(accountID string) {
 	_, _ = s.db.Exec("UPDATE accounts SET encrypted_smtp_password = NULL WHERE id = ?", accountID)
 }
 
-// IsKeyringEnabled returns whether the OS keyring is being used
+// IsKeyringEnabled returns whether the OS keyring is believed usable right now.
+// A false here means the keyring was never available (documented DB-only mode);
+// see KeyringDegraded for the mid-session failure case.
 func (s *Store) IsKeyringEnabled() bool {
-	return s.keyringEnabled
+	return keyringEnabledNow()
 }
 
 // SetSMIMEPrivateKey stores an S/MIME private key for a certificate
@@ -274,14 +241,12 @@ func (s *Store) SetSMIMEPrivateKey(certID string, privateKeyPEM []byte) error {
 	keyringKey := "smime:" + certID + ":private_key"
 
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, keyringKey, string(privateKeyPEM))
-		if err == nil {
-			s.log.Debug().Str("cert_id", certID).Msg("S/MIME private key stored in OS keyring")
-			s.clearSMIMEDBPrivateKey(certID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store S/MIME key in OS keyring, using fallback")
+	if inKeyring, err := s.keyringSet(keyringKey, string(privateKeyPEM)); err != nil {
+		return fmt.Errorf("credential not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("cert_id", certID).Msg("S/MIME private key stored in OS keyring")
+		s.clearSMIMEDBPrivateKey(certID)
+		return nil
 	}
 
 	// Fallback to encrypted database storage
@@ -307,14 +272,10 @@ func (s *Store) GetSMIMEPrivateKey(certID string) ([]byte, error) {
 	keyringKey := "smime:" + certID + ":private_key"
 
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		key, err := gokeyring.Get(serviceName, keyringKey)
-		if err == nil {
-			return []byte(key), nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading S/MIME key from OS keyring, trying fallback")
-		}
+	if key, found, err := s.keyringGet(keyringKey); err != nil {
+		return nil, err
+	} else if found {
+		return []byte(key), nil
 	}
 
 	// Try fallback encrypted database storage
@@ -347,9 +308,7 @@ func (s *Store) GetSMIMEPrivateKey(certID string) ([]byte, error) {
 func (s *Store) DeleteSMIMEPrivateKey(certID string) error {
 	keyringKey := "smime:" + certID + ":private_key"
 
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, keyringKey)
-	}
+	s.keyringDelete(keyringKey)
 
 	s.clearSMIMEDBPrivateKey(certID)
 	return nil
@@ -369,14 +328,12 @@ func (s *Store) SetPGPPrivateKey(keyID string, armoredKey []byte) error {
 	keyringKey := "pgp:" + keyID + ":private_key"
 
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, keyringKey, string(armoredKey))
-		if err == nil {
-			s.log.Debug().Str("key_id", keyID).Msg("PGP private key stored in OS keyring")
-			s.clearPGPDBPrivateKey(keyID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store PGP key in OS keyring, using fallback")
+	if inKeyring, err := s.keyringSet(keyringKey, string(armoredKey)); err != nil {
+		return fmt.Errorf("credential not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("key_id", keyID).Msg("PGP private key stored in OS keyring")
+		s.clearPGPDBPrivateKey(keyID)
+		return nil
 	}
 
 	// Fallback to encrypted database storage
@@ -402,14 +359,10 @@ func (s *Store) GetPGPPrivateKey(keyID string) ([]byte, error) {
 	keyringKey := "pgp:" + keyID + ":private_key"
 
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		key, err := gokeyring.Get(serviceName, keyringKey)
-		if err == nil {
-			return []byte(key), nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading PGP key from OS keyring, trying fallback")
-		}
+	if key, found, err := s.keyringGet(keyringKey); err != nil {
+		return nil, err
+	} else if found {
+		return []byte(key), nil
 	}
 
 	// Try fallback encrypted database storage
@@ -442,9 +395,7 @@ func (s *Store) GetPGPPrivateKey(keyID string) ([]byte, error) {
 func (s *Store) DeletePGPPrivateKey(keyID string) error {
 	keyringKey := "pgp:" + keyID + ":private_key"
 
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, keyringKey)
-	}
+	s.keyringDelete(keyringKey)
 
 	s.clearPGPDBPrivateKey(keyID)
 	return nil
@@ -474,20 +425,16 @@ func (s *Store) clearPGPDBPrivateKey(keyID string) {
 // `encrypted_value` column: empty string → "lives in keyring", non-empty →
 // "AES ciphertext (base64) right here".
 
-// trySetExtensionSecretInKeyring is an internal helper that attempts a
-// keyring write. Returns true on success, false on disabled/failed (logs a
-// warning on real failures).
-func (s *Store) trySetExtensionSecretInKeyring(extension, key, value string) bool {
-	if !s.keyringEnabled {
-		return false
+// trySetExtensionSecretInKeyring attempts a keyring write. Returns stored=true
+// on success, false with a nil error when the keyring is disabled (DB-only
+// mode), and a non-nil error when a live keyring failed — in which case the
+// caller must not fall back to the DB.
+func (s *Store) trySetExtensionSecretInKeyring(extension, key, value string) (stored bool, err error) {
+	stored, err = s.keyringSet("ext:"+extension+":"+key, value)
+	if err != nil {
+		return false, fmt.Errorf("extension secret not stored: %w", err)
 	}
-	keyringKey := "ext:" + extension + ":" + key
-	if err := gokeyring.Set(serviceName, keyringKey, value); err != nil {
-		s.log.Warn().Err(err).Str("extension", extension).Str("key", key).
-			Msg("Failed to store extension secret in OS keyring, falling back to encrypted DB")
-		return false
-	}
-	return true
+	return stored, nil
 }
 
 // SetExtensionSecret stores a per-extension secret. Keyring is tried first;
@@ -502,7 +449,10 @@ func (s *Store) SetExtensionSecret(extension, key, value string) error {
 		return s.DeleteExtensionSecret(extension, key)
 	}
 
-	storedInKeyring := s.trySetExtensionSecretInKeyring(extension, key, value)
+	storedInKeyring, err := s.trySetExtensionSecretInKeyring(extension, key, value)
+	if err != nil {
+		return err
+	}
 
 	var encryptedValue string
 	if !storedInKeyring {
@@ -513,7 +463,7 @@ func (s *Store) SetExtensionSecret(extension, key, value string) error {
 		encryptedValue = ct
 	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO extension_secrets (extension, key, encrypted_value, created_at)
 		VALUES (?, ?, ?, strftime('%s', 'now'))
 		ON CONFLICT(extension, key) DO UPDATE SET
@@ -525,7 +475,7 @@ func (s *Store) SetExtensionSecret(extension, key, value string) error {
 		// Roll the keyring entry back if we wrote one, so on-disk state stays
 		// consistent.
 		if storedInKeyring {
-			_ = gokeyring.Delete(serviceName, "ext:"+extension+":"+key)
+			s.keyringDelete("ext:" + extension + ":" + key)
 		}
 		return fmt.Errorf("persist extension secret: %w", err)
 	}
@@ -562,19 +512,18 @@ func (s *Store) GetExtensionSecret(extension, key string) (string, error) {
 	}
 
 	// Empty ciphertext → value is in the keyring.
-	if !s.keyringEnabled {
-		// Row says "keyring" but keyring is no longer available. Treat as
-		// missing; the caller will prompt the user to re-enter.
+	value, found, kerr := s.keyringGet("ext:" + extension + ":" + key)
+	if kerr != nil {
+		// Live keyring, hard failure: surface it instead of reporting "missing",
+		// which would make the UI prompt for a secret that is still stored.
+		return "", kerr
+	}
+	if !found {
+		// Row says "keyring" but the entry is gone. Treat as missing; the caller
+		// will prompt the user to re-enter.
 		return "", nil
 	}
-	value, kerr := gokeyring.Get(serviceName, "ext:"+extension+":"+key)
-	if kerr == nil {
-		return value, nil
-	}
-	if kerr == gokeyring.ErrNotFound {
-		return "", nil
-	}
-	return "", fmt.Errorf("read extension secret from keyring: %w", kerr)
+	return value, nil
 }
 
 // DeleteExtensionSecret removes a per-extension secret. Idempotent —
@@ -584,13 +533,7 @@ func (s *Store) DeleteExtensionSecret(extension, key string) error {
 	if extension == "" || key == "" {
 		return fmt.Errorf("credentials: extension and key required")
 	}
-	if s.keyringEnabled {
-		err := gokeyring.Delete(serviceName, "ext:"+extension+":"+key)
-		if err != nil && err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Str("extension", extension).Str("key", key).
-				Msg("Failed to delete extension secret from keyring")
-		}
-	}
+	s.keyringDelete("ext:" + extension + ":" + key)
 	_, err := s.db.Exec(
 		`DELETE FROM extension_secrets WHERE extension = ? AND key = ?`,
 		extension, key,
@@ -629,14 +572,8 @@ func (s *Store) DeleteAllExtensionSecrets(extension string) error {
 		return fmt.Errorf("iterate extension secret keys: %w", err)
 	}
 
-	if s.keyringEnabled {
-		for _, k := range keys {
-			derr := gokeyring.Delete(serviceName, "ext:"+extension+":"+k)
-			if derr != nil && derr != gokeyring.ErrNotFound {
-				s.log.Warn().Err(derr).Str("extension", extension).Str("key", k).
-					Msg("Failed to delete extension secret from keyring")
-			}
-		}
+	for _, k := range keys {
+		s.keyringDelete("ext:" + extension + ":" + k)
 	}
 	_, err = s.db.Exec(`DELETE FROM extension_secrets WHERE extension = ?`, extension)
 	if err != nil {
@@ -652,15 +589,13 @@ func (s *Store) SetCardDAVPassword(sourceID, password string) error {
 	}
 
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, "carddav:"+sourceID, password)
-		if err == nil {
-			s.log.Debug().Str("source_id", sourceID).Msg("CardDAV password stored in OS keyring")
-			// Clear any fallback storage
-			s.clearCardDAVDBPassword(sourceID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store CardDAV password in OS keyring, using fallback")
+	if inKeyring, err := s.keyringSet("carddav:"+sourceID, password); err != nil {
+		return fmt.Errorf("credential not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("source_id", sourceID).Msg("CardDAV password stored in OS keyring")
+		// Clear any fallback storage
+		s.clearCardDAVDBPassword(sourceID)
+		return nil
 	}
 
 	// Fallback to encrypted database storage
@@ -684,14 +619,10 @@ func (s *Store) SetCardDAVPassword(sourceID, password string) error {
 // GetCardDAVPassword retrieves a password for a CardDAV contact source
 func (s *Store) GetCardDAVPassword(sourceID string) (string, error) {
 	// Try OS keyring first if available
-	if s.keyringEnabled {
-		password, err := gokeyring.Get(serviceName, "carddav:"+sourceID)
-		if err == nil {
-			return password, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading CardDAV password from OS keyring, trying fallback")
-		}
+	if password, found, err := s.keyringGet("carddav:" + sourceID); err != nil {
+		return "", err
+	} else if found {
+		return password, nil
 	}
 
 	// Try fallback encrypted database storage
@@ -724,9 +655,7 @@ func (s *Store) GetCardDAVPassword(sourceID string) (string, error) {
 // DeleteCardDAVPassword removes a password for a CardDAV contact source
 func (s *Store) DeleteCardDAVPassword(sourceID string) error {
 	// Delete from OS keyring
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, "carddav:"+sourceID)
-	}
+	s.keyringDelete("carddav:" + sourceID)
 
 	// Delete from database
 	s.clearCardDAVDBPassword(sourceID)

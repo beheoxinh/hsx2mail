@@ -7,11 +7,12 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/beheoxinh/hsx2mail/internal/database"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -19,6 +20,10 @@ import (
 type Store struct {
 	db  *database.DB
 	log zerolog.Logger
+
+	// stmtCache memoises one *sql.Stmt per distinct hot-read SQL string. See
+	// preparedStmt for why this is bounded and cannot leak.
+	stmtCache sync.Map
 }
 
 // NewStore creates a new message store
@@ -59,6 +64,162 @@ func filterWhereClause(filter, prefix string) string {
 	}
 }
 
+// Deterministic sort tiebreakers (2-12).
+//
+// Every list query that paginates with LIMIT/OFFSET orders by a date column
+// that is NOT unique: hundreds of conversations share the same latest_date to
+// the second, and `date` itself is a whole-second TEXT timestamp. Without a
+// tiebreaker SQLite is free to return tied rows in any order, so page 2 can
+// repeat a row from page 1 or skip one entirely.
+//
+// The tiebreaker is the row's own primary key, which is unique by definition
+// and therefore turns the order into a total order over the result set. ASC is
+// used for the id so that both sort directions keep the oldest-matching row
+// first within a tie -- a stable, reproducible page boundary.
+//
+// `conv_thread_id` is COALESCE(thread_id, id): the same key the conversation
+// queries group by, so it is unique per group and orders groups rather than
+// individual messages.
+const (
+	orderDateDesc      = "ORDER BY date DESC, id ASC"
+	orderLatestNewest  = "ORDER BY latest_date DESC, conv_thread_id ASC"
+	orderLatestOldest  = "ORDER BY latest_date ASC, conv_thread_id ASC"
+	orderInboxNewest   = "ORDER BY latest_date DESC, conv_thread_id ASC, a.id ASC"
+	orderInboxOldest   = "ORDER BY latest_date ASC, conv_thread_id ASC, a.id ASC"
+	orderConvAsc       = "ORDER BY m.date ASC, m.id ASC"
+	orderConvFTSNewest = "ORDER BY latest_date DESC, conv_thread_id ASC"
+)
+
+// orderByLatest returns the conversation ordering for a sort order, including
+// the deterministic tiebreaker.
+func orderByLatest(sortOrder string) string {
+	if sortOrder == "oldest" {
+		return orderLatestOldest
+	}
+	return orderLatestNewest
+}
+
+// Precomputed conversation-list SQL (2-11).
+//
+// The query was previously rebuilt from four independent string fragments on
+// every call: participantsExpr (2 variants), orderClause (2 variants) and the
+// HAVING clause (4 variants: none/unread/starred/attachments). That is 16
+// distinct statements, all of them known at compile time, so they are
+// materialised once into a lookup table and the per-call cost drops to a map
+// lookup with no allocation.
+//
+// The participantsExpr is keyed by folder type rather than by the boolean
+// branch that used to pick it, so the sent/drafts rule stays in exactly one
+// place.
+const (
+	participantsFrom = `json_group_array(DISTINCT json_object('name', from_name, 'email', from_email))`
+	participantsTo   = `json_group_array(json(to_list))`
+)
+
+// convListSQLKey identifies one of the 16 conversation-list statements.
+type convListSQLKey struct {
+	toList  bool
+	oldest  bool
+	unread  bool
+	starred bool
+	attach  bool
+}
+
+// convListSQL holds every prebuilt variant of the folder conversation list.
+// Built once at init; lookups after that are pure map hits.
+var convListSQL = buildConvListSQL()
+
+func buildConvListSQL() map[convListSQLKey]string {
+	participants := [2]string{participantsFrom, participantsTo}
+	orders := [2]string{orderLatestNewest, orderLatestOldest}
+	filters := [4]string{"", " HAVING SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) > 0",
+		" HAVING MAX(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) = 1",
+		" HAVING MAX(CASE WHEN has_attachments = 1 THEN 1 ELSE 0 END) = 1"}
+
+	out := make(map[convListSQLKey]string, 16)
+	for tl := range participants {
+		for o := range orders {
+			for f, having := range filters {
+				key := convListSQLKey{
+					toList: tl == 1, oldest: o == 1,
+					unread: f == 1, starred: f == 2, attach: f == 3,
+				}
+				out[key] = `SELECT
+			COALESCE(thread_id, id) as conv_thread_id,
+			MIN(subject) as subject,
+			MAX(snippet) as snippet,
+			COUNT(*) as message_count,
+			SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) as unread_count,
+			MAX(CASE WHEN has_attachments = 1 THEN 1 ELSE 0 END) as has_attachments,
+			MAX(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) as is_starred,
+			MAX(date) as latest_date,
+			GROUP_CONCAT(id) as message_ids,
+			MAX(CASE WHEN smime_encrypted = 1 OR pgp_encrypted = 1 THEN 1 ELSE 0 END) as is_encrypted,
+			` + participants[tl] + ` as participants_json
+		FROM messages
+		WHERE folder_id = ?
+		GROUP BY COALESCE(thread_id, id)` + having + `
+		` + orders[o] + `
+		LIMIT ? OFFSET ?`
+			}
+		}
+	}
+	return out
+}
+
+// convListSQLFor returns the prebuilt statement for the given shape. The
+// filter flags mirror filterHavingClause's switch exactly, including its
+// default branch (an unknown filter means no HAVING clause).
+func convListSQLFor(useToList bool, sortOrder, filter string) string {
+	key := convListSQLKey{toList: useToList, oldest: sortOrder == "oldest"}
+	switch filter {
+	case "unread":
+		key.unread = true
+	case "starred":
+		key.starred = true
+	case "attachments":
+		key.attach = true
+	}
+	return convListSQL[key]
+}
+
+// preparedStmt returns a statement for q, preparing it on first use and
+// reusing it afterwards.
+//
+// A *sql.Stmt is a *per-connection* handle, not a cache of compiled SQL that
+// this package owns: database/sql re-prepares it on whichever pooled
+// connection it is handed and keeps at most one driver statement per
+// (Stmt, connection) pair. Because the pool is capped (MaxOpenConns = 12) the
+// resident cost is bounded by variants x connections, and a statement whose
+// connection dies is transparently re-prepared on the next call. Storing one
+// *sql.Stmt per distinct SQL string in a Store therefore cannot leak
+// connections, rows or file handles.
+//
+// The map is per-Store, so it dies with the Store rather than outliving the
+// database it was prepared against.
+func (s *Store) preparedStmt(q string) (*sql.Stmt, error) {
+	if stmt, ok := s.stmtCache.Load(q); ok {
+		return stmt.(*sql.Stmt), nil
+	}
+	stmt, err := s.db.Prepare(q)
+	if err != nil {
+		return nil, err
+	}
+	// `loaded` is the signal here, NOT `actual != nil`: LoadOrStore returns the
+	// value it just stored when loaded is false, so testing the value for nil
+	// makes every first call look like a lost race — and the loser branch then
+	// closes the statement it just prepared, which surfaces to the caller as
+	// "sql: statement is closed".
+	actual, loaded := s.stmtCache.LoadOrStore(q, stmt)
+	if loaded {
+		// Another caller won the race; drop our duplicate so the number of
+		// live statements stays equal to the number of distinct queries.
+		_ = stmt.Close()
+		return actual.(*sql.Stmt), nil
+	}
+	return stmt, nil
+}
+
 // ListByFolder returns message headers for a folder with pagination
 func (s *Store) ListByFolder(folderID string, offset, limit int) ([]*MessageHeader, error) {
 	query := `
@@ -66,7 +227,7 @@ func (s *Store) ListByFolder(folderID string, offset, limit int) ([]*MessageHead
 		       date, snippet, is_read, is_starred, has_attachments
 		FROM messages
 		WHERE folder_id = ?
-		ORDER BY date DESC
+		` + orderDateDesc + `
 		LIMIT ? OFFSET ?
 	`
 
@@ -110,10 +271,9 @@ func (s *Store) ListByFolder(folderID string, offset, limit int) ([]*MessageHead
 // ListConversationsUnifiedInbox returns conversations from all inbox folders across all accounts
 // This is used for the unified inbox view
 func (s *Store) ListConversationsUnifiedInbox(offset, limit int, sortOrder, filter string) ([]*Conversation, error) {
-	// Determine sort direction
-	orderClause := "ORDER BY latest_date DESC"
+	orderClause := orderInboxNewest
 	if sortOrder == "oldest" {
-		orderClause = "ORDER BY latest_date ASC"
+		orderClause = orderInboxOldest
 	}
 
 	// Query conversations from all inbox folders, joining with accounts for name and color
@@ -199,8 +359,6 @@ func (s *Store) ListConversationsUnifiedInbox(offset, limit int, sortOrder, filt
 
 	return conversations, nil
 }
-
-
 
 // CountConversationsUnifiedInbox returns the total count of conversations across all inbox folders
 func (s *Store) CountConversationsUnifiedInbox(filter string) (int, error) {
@@ -598,10 +756,55 @@ func (s *Store) Create(m *Message) error {
 	return nil
 }
 
-// Upsert inserts a message or updates it if a row with the same (folder_id, uid) already exists.
-// This handles cases where a previous copy was deleted but the stale row remains, or where
-// the IMAP server reuses UIDs after EXPUNGE.
-func (s *Store) Upsert(m *Message) error {
+// upsertMessageSQL is the single header/flag upsert used by both Upsert and
+// UpsertBatch. RETURNING yields the row id that actually landed (the new UUID
+// on insert, the pre-existing id on conflict) so callers can correct m.ID.
+const upsertMessageSQL = `	INSERT INTO messages (
+		id, account_id, folder_id, uid, message_id, in_reply_to, references_list, thread_id,
+		subject, from_name, from_email, to_list, cc_list, bcc_list, reply_to, date,
+		snippet, is_read, is_starred, is_answered, is_forwarded, is_draft, is_deleted,
+		size, has_attachments, body_text, body_html, body_fetched,
+		read_receipt_to, read_receipt_handled, received_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(folder_id, uid) DO UPDATE SET
+		-- id is intentionally NOT updated: attachments.message_id
+		-- references messages(id) with no ON UPDATE action, so rewriting
+		-- it fails with FOREIGN KEY constraint on any re-upsert of a
+		-- message that already has attachments. Callers read the effective
+		-- id back from RETURNING.
+		account_id=excluded.account_id,
+		message_id=excluded.message_id, in_reply_to=excluded.in_reply_to,
+		references_list=excluded.references_list, thread_id=excluded.thread_id,
+		subject=excluded.subject, from_name=excluded.from_name, from_email=excluded.from_email,
+		to_list=excluded.to_list, cc_list=excluded.cc_list, bcc_list=excluded.bcc_list,
+		reply_to=excluded.reply_to, date=excluded.date,
+		snippet=excluded.snippet, is_read=excluded.is_read, is_starred=excluded.is_starred,
+		is_answered=excluded.is_answered, is_forwarded=excluded.is_forwarded,
+		is_draft=excluded.is_draft, is_deleted=excluded.is_deleted,
+		size=excluded.size, has_attachments=excluded.has_attachments,
+		-- A header-only fetch carries empty bodies and body_fetched=0.
+		-- Blanking an already-downloaded body here loses it until the next
+		-- body fetch, so only overwrite when the incoming row actually has
+		-- a body (or explicitly re-marks it as fetched).
+		body_text=CASE WHEN excluded.body_fetched = 1 OR excluded.body_text IS NOT NULL AND excluded.body_text != ''
+			THEN excluded.body_text ELSE messages.body_text END,
+		body_html=CASE WHEN excluded.body_fetched = 1 OR excluded.body_html IS NOT NULL AND excluded.body_html != ''
+			THEN excluded.body_html ELSE messages.body_html END,
+		body_fetched=CASE WHEN excluded.body_fetched = 1 OR excluded.body_text IS NOT NULL AND excluded.body_text != ''
+			OR excluded.body_html IS NOT NULL AND excluded.body_html != ''
+			THEN 1 ELSE messages.body_fetched END,
+		read_receipt_to=excluded.read_receipt_to, read_receipt_handled=excluded.read_receipt_handled,
+		received_at=excluded.received_at
+	RETURNING id`
+
+// rowQueryer is the subset of *sql.DB and *sql.Tx that upsertOne needs, so one
+// upsert implementation serves both the single and the transactional path.
+type rowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// upsertOne runs one message upsert against the given DB handle.
+func upsertOne(q rowQueryer, m *Message) error {
 	if m.ID == "" {
 		m.ID = uuid.New().String()
 	}
@@ -609,34 +812,11 @@ func (s *Store) Upsert(m *Message) error {
 		m.ReceivedAt = time.Now().UTC()
 	}
 
-	query := `
-		INSERT INTO messages (
-			id, account_id, folder_id, uid, message_id, in_reply_to, references_list, thread_id,
-			subject, from_name, from_email, to_list, cc_list, bcc_list, reply_to, date,
-			snippet, is_read, is_starred, is_answered, is_forwarded, is_draft, is_deleted,
-			size, has_attachments, body_text, body_html, body_fetched,
-			read_receipt_to, read_receipt_handled, received_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(folder_id, uid) DO UPDATE SET
-			id=excluded.id, account_id=excluded.account_id,
-			message_id=excluded.message_id, in_reply_to=excluded.in_reply_to,
-			references_list=excluded.references_list, thread_id=excluded.thread_id,
-			subject=excluded.subject, from_name=excluded.from_name, from_email=excluded.from_email,
-			to_list=excluded.to_list, cc_list=excluded.cc_list, bcc_list=excluded.bcc_list,
-			reply_to=excluded.reply_to, date=excluded.date,
-			snippet=excluded.snippet, is_read=excluded.is_read, is_starred=excluded.is_starred,
-			is_answered=excluded.is_answered, is_forwarded=excluded.is_forwarded,
-			is_draft=excluded.is_draft, is_deleted=excluded.is_deleted,
-			size=excluded.size, has_attachments=excluded.has_attachments,
-			body_text=excluded.body_text, body_html=excluded.body_html,
-			body_fetched=excluded.body_fetched,
-			read_receipt_to=excluded.read_receipt_to, read_receipt_handled=excluded.read_receipt_handled,
-			received_at=excluded.received_at
-	`
-
-	_, err := s.db.Exec(query,
+	var effectiveID string
+	if err := q.QueryRow(upsertMessageSQL,
 		m.ID, m.AccountID, m.FolderID, m.UID,
-		nullString(m.MessageID), nullString(m.InReplyTo), nullString(m.References), nullString(m.ThreadID),
+		nullString(m.MessageID),
+		nullString(m.InReplyTo), nullString(m.References), nullString(m.ThreadID),
 		m.Subject, m.FromName, m.FromEmail,
 		nullString(m.ToList), nullString(m.CcList), nullString(m.BccList), nullString(m.ReplyTo),
 		m.Date, nullString(m.Snippet),
@@ -645,11 +825,47 @@ func (s *Store) Upsert(m *Message) error {
 		nullString(m.BodyText), nullString(m.BodyHTML), m.BodyFetched,
 		nullString(m.ReadReceiptTo), m.ReadReceiptHandled,
 		m.ReceivedAt,
-	)
-	if err != nil {
+	).Scan(&effectiveID); err != nil {
 		return fmt.Errorf("failed to upsert message: %w", err)
 	}
+	m.ID = effectiveID
 
+	return nil
+}
+
+// Upsert inserts a message or updates it if a row with the same (folder_id, uid) already exists.
+// This handles cases where a previous copy was deleted but the stale row remains, or where
+// the IMAP server reuses UIDs after EXPUNGE.
+func (s *Store) Upsert(m *Message) error {
+	return upsertOne(s.db, m)
+}
+
+// UpsertBatch applies the same upsert as Upsert for every message inside a
+// single transaction. A header sync of N messages then costs one WAL commit
+// instead of N, which is what previously starved the FTS triggers and the
+// connection pool during a large folder refresh. Each message's ID is
+// corrected in place, so callers see exactly what repeated Upsert calls leave
+// behind.
+func (s *Store) UpsertBatch(msgs []*Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin upsert batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, m := range msgs {
+		if err := upsertOne(tx, m); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit upsert batch: %w", err)
+	}
 	return nil
 }
 
@@ -803,6 +1019,38 @@ func (s *Store) DeleteByFolder(folderID string) error {
 	return nil
 }
 
+// ResetForUIDValidityChange atomically clears a folder's local messages and
+// records the folder's new UIDVALIDITY.
+//
+// Doing both in one transaction is what makes the resync crash-safe: previously
+// the delete and the UIDVALIDITY write were separate, so a crash (or power loss)
+// between them left the OLD UIDVALIDITY on the folder while the messages were
+// already gone. The next sync saw the same mismatch and deleted-and-refetched
+// the whole folder again — an expensive, repeating full resync.
+func (s *Store) ResetForUIDValidityChange(folderID string, uidValidity uint32) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin resync transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec("DELETE FROM messages WHERE folder_id = ?", folderID); err != nil {
+		return fmt.Errorf("failed to delete messages for resync: %w", err)
+	}
+	if _, err := tx.Exec(`
+		UPDATE folders
+		SET uid_validity = ?, highest_mod_seq = 0
+		WHERE id = ?
+	`, uidValidity, folderID); err != nil {
+		return fmt.Errorf("failed to record new UIDValidity: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit resync transaction: %w", err)
+	}
+	return nil
+}
+
 // ExistsInFolder checks if a message with the given RFC 822 Message-ID exists
 // in a folder of the specified type (e.g., "trash", "spam") for the account.
 func (s *Store) ExistsInFolder(messageID string, folderType string, accountID string) (bool, error) {
@@ -816,6 +1064,162 @@ func (s *Store) ExistsInFolder(messageID string, folderType string, accountID st
 		return false, fmt.Errorf("failed to check message in folder type: %w", err)
 	}
 	return count > 0, nil
+}
+
+// maxBatchPlaceholders caps the number of bind parameters in a generated
+// IN (...) list. Batched lookups are chunked to this size so a pathological
+// sync can never build a statement with more parameters than SQLite's
+// SQLITE_MAX_VARIABLE_NUMBER allows.
+const maxBatchPlaceholders = 500
+
+// DeletedUIDInfo is what deletion reconciliation needs about one locally-held
+// message whose IMAP UID vanished from the server listing.
+type DeletedUIDInfo struct {
+	MessageID string
+	// SpecialFolderTypes lists the trash/spam folder types this message also
+	// lives in. Gmail hides a message from every other view once a Trash or
+	// Spam label is added, so the UID disappearing does not mean the message
+	// was really deleted. Empty means "not hidden" -- safe to remove locally.
+	SpecialFolderTypes []string
+}
+
+// GetDeletedUIDInfo resolves a batch of vanished UIDs with a constant number
+// of queries per chunk instead of the previous per-UID
+// GetByUID + 2x ExistsInFolder (3N round-trips, with the IMAP connection held
+// for the whole loop).
+//
+// Two queries per chunk, both index-driven:
+//   - uid -> message_id rides the UNIQUE(folder_id, uid) index;
+//   - the trash/spam probe rides idx_messages_message_id_norm.
+func (s *Store) GetDeletedUIDInfo(folderID, accountID string, uids []uint32) (map[uint32]DeletedUIDInfo, error) {
+	out := make(map[uint32]DeletedUIDInfo, len(uids))
+	if len(uids) == 0 {
+		return out, nil
+	}
+
+	// Deliberately NOT wrapped in a transaction: this is a pure read, and the
+	// connection string sets _txlock=immediate, so BEGIN would take SQLite's
+	// global write lock for the whole (chunked) lookup and stall every writer
+	// in the process — the exact contention _txlock=immediate exists to avoid.
+	// A per-chunk read is also self-consistent: each row is looked up
+	// independently and a message expunged mid-lookup simply is not reported.
+
+	for start := 0; start < len(uids); start += maxBatchPlaceholders {
+		end := start + maxBatchPlaceholders
+		if end > len(uids) {
+			end = len(uids)
+		}
+		chunk := uids[start:end]
+
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, folderID)
+		inList := makePlaceholders(len(chunk))
+		for _, uid := range chunk {
+			args = append(args, int64(uid))
+		}
+
+		byUID := make(map[uint32]string, len(chunk))
+		rows, err := s.db.Query(
+			"SELECT uid, message_id FROM messages WHERE folder_id = ? AND uid IN ("+inList+")",
+			args...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up deleted uids: %w", err)
+		}
+		for rows.Next() {
+			var uid int64
+			var messageID sql.NullString
+			if err := rows.Scan(&uid, &messageID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan deleted uid: %w", err)
+			}
+			if messageID.Valid && messageID.String != "" {
+				byUID[uint32(uid)] = messageID.String
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("failed to iterate deleted uids: %w", err)
+		}
+		rows.Close()
+
+		// One probe for every message-id in the chunk instead of two
+		// ExistsInFolder calls per uid.
+		// The probe compares against the REPLACE()-normalized column, so the
+		// ids must be normalized here too, not passed through raw.
+		ids := make([]string, 0, len(byUID))
+		seen := make(map[string]bool, len(byUID))
+		for _, id := range byUID {
+			norm := normalizeMessageID(id)
+			if norm == "" || seen[norm] {
+				continue
+			}
+			seen[norm] = true
+			ids = append(ids, norm)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+
+		special, err := querySpecialFolderTypes(s.db, accountID, makePlaceholders(len(ids)), ids)
+		if err != nil {
+			return nil, err
+		}
+
+		for uid, id := range byUID {
+			out[uid] = DeletedUIDInfo{
+				MessageID:          id,
+				SpecialFolderTypes: special[normalizeMessageID(id)],
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// querySpecialFolderTypes maps normalized message-id -> trash/spam folder
+// types present for the account. The DISTINCT projection means a message
+// copied into both trash and spam reports both types, and the
+// REPLACE()-normalized comparison matches on either the bracketed or the
+// bare stored form.
+func querySpecialFolderTypes(db *database.DB, accountID, inList string, ids []string) (map[string][]string, error) {
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, accountID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := db.Query(`
+		SELECT DISTINCT m.message_id, f.folder_type
+		FROM messages m
+		JOIN folders f ON m.folder_id = f.id
+		WHERE m.account_id = ?
+		  AND f.folder_type IN ('trash', 'spam')
+		  AND REPLACE(REPLACE(m.message_id, '<', ''), '>', '') IN (`+inList+`)
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up trash/spam copies: %w", err)
+	}
+	defer rows.Close()
+
+	special := make(map[string][]string)
+	for rows.Next() {
+		var id, folderType string
+		if err := rows.Scan(&id, &folderType); err != nil {
+			return nil, fmt.Errorf("failed to scan trash/spam copy: %w", err)
+		}
+		key := normalizeMessageID(id)
+		special[key] = append(special[key], folderType)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate trash/spam copies: %w", err)
+	}
+	return special, nil
+}
+
+// makePlaceholders returns a comma-separated list of n bind placeholders.
+func makePlaceholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 // HasCopiesInOtherFolders checks if a message with the same RFC 822 Message-ID
@@ -874,9 +1278,17 @@ func (s *Store) UpdateBody(messageID, bodyHTML, bodyText, snippet string, hasAtt
 		SET body_html = ?, body_text = ?, snippet = ?, body_fetched = 1, has_attachments = ?
 		WHERE id = ?
 	`
-	_, err := s.db.Exec(query, nullString(bodyHTML), nullString(bodyText), nullString(snippet), hasAttachments, messageID)
+	result, err := s.db.Exec(query, nullString(bodyHTML), nullString(bodyText), nullString(snippet), hasAttachments, messageID)
 	if err != nil {
 		return fmt.Errorf("failed to update body: %w", err)
+	}
+	// A 0-row UPDATE means the message is gone (deleted mid-sync, or an id from
+	// a different database). Reporting success here let the sync mark the body
+	// as fetched and drop it from the retry queue, losing the body silently.
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("failed to check body update: %w", err)
+	} else if affected == 0 {
+		return fmt.Errorf("message %s not found while writing body", messageID)
 	}
 	return nil
 }
@@ -885,6 +1297,54 @@ func (s *Store) UpdateBody(messageID, bodyHTML, bodyText, snippet string, hasAtt
 // GetMessagesWithoutBody returns message IDs that don't have their body fetched yet,
 // or have body_fetched=1 but empty body content (self-healing for failed parses).
 // If sinceDate is not zero, only returns messages dated on or after that date.
+// needsBodyQuery builds the body-fetch candidate query used by
+// GetMessagesWithoutBody, GetMessagesWithoutBodyAndSize and
+// CountMessagesWithoutBody.
+//
+// The old shape OR'd two unrelated predicates, so idx_messages_body_fetched
+// could not be used and every batch scanned the whole folder and temp-sorted
+// by date. The predicate is now split into two branches:
+//
+//   - "never fetched and not permanently failed" matches the partial index
+//     idx_messages_needs_body (folder_id, date DESC) exactly, so it is an
+//     index range scan already in the requested order.
+//   - "fetched but came back empty" is the self-heal branch. It reads
+//     body_text/body_html, so no index can serve it; it stays a scan but is
+//     bounded by its own LIMIT so it cannot flood the merge.
+//
+// A top-N over a union is the union of the per-branch top-N, so the outer
+// LIMIT applies to the merged, re-sorted result and the caller still gets the
+// newest `limit` candidates overall. withDate adds the retention-window
+// filter used when a sync period is configured; the `date < '1970-01-01'`
+// escape hatch (undated messages) is preserved verbatim.
+func needsBodyQuery(projection string, withDate bool) string {
+	dateFilter := ""
+	if withDate {
+		dateFilter = " AND (date >= ? OR date < '1970-01-01')"
+	}
+	return `
+		SELECT ` + projection + ` FROM (
+			SELECT * FROM (
+				SELECT ` + projection + `, date FROM messages
+				WHERE folder_id = ? AND body_fetched = 0 AND body_failed = 0` + dateFilter + `
+				ORDER BY date DESC
+				LIMIT ?
+			)
+			UNION ALL
+			SELECT * FROM (
+				SELECT ` + projection + `, date FROM messages
+				WHERE folder_id = ? AND body_fetched = 1 AND body_failed = 0
+					AND smime_encrypted = 0 AND pgp_encrypted = 0
+					AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = '')` + dateFilter + `
+				ORDER BY date DESC
+				LIMIT ?
+			)
+		)
+		ORDER BY date DESC
+		LIMIT ?
+	`
+}
+
 func (s *Store) GetMessagesWithoutBody(folderID string, limit int, sinceDate time.Time) ([]string, error) {
 	var query string
 	var rows *sql.Rows
@@ -893,27 +1353,12 @@ func (s *Store) GetMessagesWithoutBody(folderID string, limit int, sinceDate tim
 	// Include messages where body_fetched=0 OR body was fetched but is empty (needs re-fetch)
 	// Exclude encrypted messages which intentionally have empty body (decrypted on-view)
 	if sinceDate.IsZero() {
-		query = `
-			SELECT id FROM messages
-			WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0
-			ORDER BY date DESC
-			LIMIT ?
-		`
-		rows, err = s.db.Query(query, folderID, limit)
+		query = needsBodyQuery("id", false)
+		rows, err = s.db.Query(query, folderID, limit, folderID, limit, limit)
 	} else {
-		query = `
-			SELECT id FROM messages
-			WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0 AND (date >= ? OR date < '1970-01-01')
-			ORDER BY date DESC
-			LIMIT ?
-		`
-		rows, err = s.db.Query(query, folderID, sinceDate, limit)
+		query = needsBodyQuery("id", true)
+		rows, err = s.db.Query(query,
+			folderID, sinceDate, limit, folderID, sinceDate, limit, limit)
 	}
 
 	if err != nil {
@@ -949,27 +1394,12 @@ func (s *Store) GetMessagesWithoutBodyAndSize(folderID string, limit int, sinceD
 	// Include messages where body_fetched=0 OR body was fetched but is empty (needs re-fetch)
 	// Exclude encrypted messages which intentionally have empty body (decrypted on-view)
 	if sinceDate.IsZero() {
-		query = `
-			SELECT id, size FROM messages
-			WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0
-			ORDER BY date DESC
-			LIMIT ?
-		`
-		rows, err = s.db.Query(query, folderID, limit)
+		query = needsBodyQuery("id, size", false)
+		rows, err = s.db.Query(query, folderID, limit, folderID, limit, limit)
 	} else {
-		query = `
-			SELECT id, size FROM messages
-			WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0 AND (date >= ? OR date < '1970-01-01')
-			ORDER BY date DESC
-			LIMIT ?
-		`
-		rows, err = s.db.Query(query, folderID, sinceDate, limit)
+		query = needsBodyQuery("id, size", true)
+		rows, err = s.db.Query(query,
+			folderID, sinceDate, limit, folderID, sinceDate, limit, limit)
 	}
 
 	if err != nil {
@@ -997,21 +1427,36 @@ func (s *Store) CountMessagesWithoutBody(folderID string, sinceDate time.Time) (
 
 	// Include messages where body_fetched=0 OR body was fetched but is empty (needs re-fetch)
 	// Exclude encrypted messages which intentionally have empty body (decrypted on-view)
+	// Same two-branch split as needsBodyQuery, so the count that decides
+	// "is there any body work left" is index-driven too instead of scanning
+	// the folder on every sync.
 	if sinceDate.IsZero() {
-		err = s.db.QueryRow(
-			`SELECT COUNT(*) FROM messages WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0`,
-			folderID,
+		err = s.db.QueryRow(`
+			SELECT
+				(SELECT COUNT(*) FROM messages
+				 WHERE folder_id = ? AND body_fetched = 0 AND body_failed = 0)
+				+
+				(SELECT COUNT(*) FROM messages
+				 WHERE folder_id = ? AND body_fetched = 1 AND body_failed = 0
+					AND smime_encrypted = 0 AND pgp_encrypted = 0
+					AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
+			`,
+			folderID, folderID,
 		).Scan(&count)
 	} else {
-		err = s.db.QueryRow(
-			`SELECT COUNT(*) FROM messages WHERE folder_id = ? AND (
-				body_fetched = 0 OR
-				(body_fetched = 1 AND smime_encrypted = 0 AND pgp_encrypted = 0 AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = ''))
-			) AND body_failed = 0 AND (date >= ? OR date < '1970-01-01')`,
-			folderID, sinceDate,
+		err = s.db.QueryRow(`
+			SELECT
+				(SELECT COUNT(*) FROM messages
+				 WHERE folder_id = ? AND body_fetched = 0 AND body_failed = 0
+					AND (date >= ? OR date < '1970-01-01'))
+				+
+				(SELECT COUNT(*) FROM messages
+				 WHERE folder_id = ? AND body_fetched = 1 AND body_failed = 0
+					AND smime_encrypted = 0 AND pgp_encrypted = 0
+					AND (body_text IS NULL OR body_text = '') AND (body_html IS NULL OR body_html = '')
+					AND (date >= ? OR date < '1970-01-01'))
+			`,
+			folderID, sinceDate, folderID, sinceDate,
 		).Scan(&count)
 	}
 
@@ -1031,12 +1476,17 @@ func (s *Store) CountByFolder(folderID string) (int, error) {
 	return count, nil
 }
 
-// DeleteOlderThan deletes messages older than the specified time for an account
-// Returns the number of messages deleted
-func (s *Store) DeleteOlderThan(accountID string, before time.Time) (int, error) {
+// DeleteOlderThanInFolder deletes messages older than the specified time from
+// ONE folder of an account and returns the number deleted.
+//
+// It is deliberately folder-scoped: retention is decided from the folder's
+// sync period, and an account-wide delete would wipe Sent/Trash/Archive/Drafts
+// (and their attachment rows) whenever a single folder happened to sync.
+// Attachments go with the message via ON DELETE CASCADE.
+func (s *Store) DeleteOlderThanInFolder(accountID, folderID string, before time.Time) (int, error) {
 	result, err := s.db.Exec(
-		"DELETE FROM messages WHERE account_id = ? AND date < ?",
-		accountID, before,
+		"DELETE FROM messages WHERE account_id = ? AND folder_id = ? AND date < ?",
+		accountID, folderID, before,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete old messages: %w", err)
@@ -1268,12 +1718,6 @@ func parseTimeString(s string) time.Time {
 // ListConversationsByFolder returns conversations (grouped by thread) for a folder with pagination
 // sortOrder can be "newest" (default) or "oldest"
 func (s *Store) ListConversationsByFolder(folderID string, offset, limit int, sortOrder, filter string) ([]*Conversation, error) {
-	// Determine sort direction
-	orderClause := "ORDER BY latest_date DESC"
-	if sortOrder == "oldest" {
-		orderClause = "ORDER BY latest_date ASC"
-	}
-
 	// Pre-fetch folder type so we can pick the right participants
 	// aggregation. Sent and Drafts folders should surface the recipient
 	// list ("who you wrote to") instead of the sender (always self).
@@ -1285,40 +1729,27 @@ func (s *Store) ListConversationsByFolder(folderID string, offset, limit int, so
 	_ = s.db.QueryRow("SELECT folder_type FROM folders WHERE id = ?", folderID).Scan(&folderType)
 	useToList := folderType == "sent" || folderType == "drafts"
 
-	// participantsExpr is byte-identical to the historical query for
-	// every folder except sent/drafts. The sent/drafts branch
-	// aggregates per-message to_list JSON arrays into a nested array
-	// that parseAggregatedToListJSON flattens + dedupes in Go (DISTINCT
-	// doesn't work across nested-array values in SQLite).
-	participantsExpr := `json_group_array(DISTINCT json_object('name', from_name, 'email', from_email))`
-	if useToList {
-		participantsExpr = `json_group_array(json(to_list))`
+	// Get conversations grouped by thread_id, ordered by date.
+	//
+	// The statement is one of 16 prebuilt variants (see convListSQL): the
+	// participants aggregation, the sort direction and the HAVING clause all
+	// vary, but every combination is a compile-time constant, so this is a map
+	// lookup instead of a per-call fmt.Sprintf. The result is then prepared
+	// once and reused, so the hot list path stops handing SQLite a fresh
+	// string to compile on every call.
+	//
+	// participantsExpr is byte-identical to the historical query for every
+	// folder except sent/drafts, which aggregate per-message to_list JSON
+	// arrays into a nested array that parseAggregatedToListJSON flattens and
+	// dedupes in Go (DISTINCT does not work across nested-array values in
+	// SQLite). The rule now lives in one place: the prebuilt variant table.
+	query := convListSQLFor(useToList, sortOrder, filter)
+	stmt, err := s.preparedStmt(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare conversations query: %w", err)
 	}
 
-	// Get conversations grouped by thread_id, ordered by date
-	// Use GROUP_CONCAT to get all message IDs in a single query
-	query := fmt.Sprintf(`
-		SELECT
-			COALESCE(thread_id, id) as conv_thread_id,
-			MIN(subject) as subject,
-			MAX(snippet) as snippet,
-			COUNT(*) as message_count,
-			SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) as unread_count,
-			MAX(CASE WHEN has_attachments = 1 THEN 1 ELSE 0 END) as has_attachments,
-			MAX(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) as is_starred,
-			MAX(date) as latest_date,
-			GROUP_CONCAT(id) as message_ids,
-			MAX(CASE WHEN smime_encrypted = 1 OR pgp_encrypted = 1 THEN 1 ELSE 0 END) as is_encrypted,
-			%s as participants_json
-		FROM messages
-		WHERE folder_id = ?
-		GROUP BY COALESCE(thread_id, id)`+
-		filterHavingClause(filter, "")+`
-		`+orderClause+`
-		LIMIT ? OFFSET ?
-	`, participantsExpr)
-
-	rows, err := s.db.Query(query, folderID, limit, offset)
+	rows, err := stmt.Query(folderID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query conversations: %w", err)
 	}
@@ -1451,6 +1882,50 @@ func (s *Store) CountConversationsByFolder(folderID, filter string) (int, error)
 	return count, nil
 }
 
+// threadMemberIDs returns the row ids of every message that belongs to the
+// given thread key: rows keyed by thread_id, plus rows whose own message_id
+// or in_reply_to is the key (a conversation whose parent was never filed
+// locally). Mirrors the predicate GetConversation used to inline into both
+// queries -- same three normalized comparisons, same account scope -- but as
+// a UNION ALL of three single-column equality terms so migration v42's
+// expression indexes apply.
+//
+// The OR form cannot be rewritten in place: SQLite does not run its
+// OR-to-Union transform for terms that are expressions, so the inline
+// disjunction fell back to scanning the whole account.
+func (s *Store) threadMemberIDs(accountID, normalizedThreadID string) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT id FROM messages
+		WHERE account_id = ? AND REPLACE(REPLACE(COALESCE(thread_id, id), '<', ''), '>', '') = ?
+		UNION ALL
+		SELECT id FROM messages
+		WHERE account_id = ? AND REPLACE(REPLACE(message_id, '<', ''), '>', '') = ?
+		UNION ALL
+		SELECT id FROM messages
+		WHERE account_id = ? AND REPLACE(REPLACE(in_reply_to, '<', ''), '>', '') = ?
+	`,
+		accountID, normalizedThreadID,
+		accountID, normalizedThreadID,
+		accountID, normalizedThreadID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve thread members: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan thread member id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate thread member ids: %w", err)
+	}
+	return ids, nil
+}
+
 // GetConversation returns messages in a conversation/thread from the specified folder plus Sent and Drafts
 func (s *Store) GetConversation(threadID, folderID string) (*Conversation, error) {
 	s.log.Debug().
@@ -1485,6 +1960,42 @@ func (s *Store) GetConversation(threadID, folderID string) (*Conversation, error
 		Str("accountID", accountID).
 		Msg("GetConversation normalized")
 
+	// Resolve the thread's member row ids up front. Angle brackets stay in
+	// storage (IMAP delivers Message-IDs that way), so the REPLACE() in
+	// threadMemberIDs is not a no-op and cannot simply be dropped; what
+	// changed is that the three comparisons run as index seeks against the
+	// v42 expression indexes instead of inside a disjunction the planner
+	// could not use.
+	threadMemberIDs, err := s.threadMemberIDs(accountID, normalizedThreadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(threadMemberIDs) == 0 {
+		return nil, nil
+	}
+	// A conversation with more members than SQLite has bind parameters for
+	// cannot be expressed as an IN list. The original inline disjunction had
+	// no such ceiling, so keep it as the oversized fallback rather than
+	// failing the whole open.
+	memberIDFilter := "AND m.id IN (" + makePlaceholders(len(threadMemberIDs)) + ")"
+	memberArgs := make([]any, len(threadMemberIDs))
+	if len(threadMemberIDs) > maxBatchPlaceholders {
+		s.log.Warn().
+			Str("threadID", threadID).
+			Int("members", len(threadMemberIDs)).
+			Msg("Thread exceeds the id-list ceiling; falling back to a full scan")
+		memberIDFilter = `AND (
+				REPLACE(REPLACE(COALESCE(m.thread_id, m.id), '<', ''), '>', '') = ?
+				OR REPLACE(REPLACE(m.message_id, '<', ''), '>', '') = ?
+				OR REPLACE(REPLACE(m.in_reply_to, '<', ''), '>', '') = ?
+			)`
+		memberArgs = []any{normalizedThreadID, normalizedThreadID, normalizedThreadID}
+	} else {
+		for i, id := range threadMemberIDs {
+			memberArgs[i] = id
+		}
+	}
+
 	// Get conversation summary from current folder + Sent + Drafts
 	// This gives full conversation context without cross-folder bleed
 	// Exclude messages in Trash folder unless we're viewing Trash
@@ -1508,18 +2019,16 @@ func (s *Store) GetConversation(threadID, folderID string) (*Conversation, error
 			MAX(m.date) as latest_date
 		FROM messages m
 		INNER JOIN folders f ON m.folder_id = f.id
-		WHERE m.account_id = ? AND (
-			REPLACE(REPLACE(COALESCE(m.thread_id, m.id), '<', ''), '>', '') = ?
-			OR REPLACE(REPLACE(m.message_id, '<', ''), '>', '') = ?
-			OR REPLACE(REPLACE(m.in_reply_to, '<', ''), '>', '') = ?
-		)
+		WHERE m.account_id = ? %s
 		%s %s
-	`, trashFilter, folderFilter)
+	`, memberIDFilter, trashFilter, folderFilter)
 
 	c := &Conversation{ThreadID: threadID}
 	var latestDateStr sql.NullString
 
-	err = s.db.QueryRow(summaryQuery, accountID, normalizedThreadID, normalizedThreadID, normalizedThreadID, folderID).Scan(
+	summaryArgs := append([]any{accountID}, memberArgs...)
+	summaryArgs = append(summaryArgs, folderID)
+	err = s.db.QueryRow(summaryQuery, summaryArgs...).Scan(
 		&c.Subject,
 		&c.Snippet,
 		&c.MessageCount,
@@ -1554,16 +2063,14 @@ func (s *Store) GetConversation(threadID, folderID string) (*Conversation, error
 		       m.received_at
 		FROM messages m
 		INNER JOIN folders f ON m.folder_id = f.id
-		WHERE m.account_id = ? AND (
-			REPLACE(REPLACE(COALESCE(m.thread_id, m.id), '<', ''), '>', '') = ?
-			OR REPLACE(REPLACE(m.message_id, '<', ''), '>', '') = ?
-			OR REPLACE(REPLACE(m.in_reply_to, '<', ''), '>', '') = ?
-		)
+		WHERE m.account_id = ? %s
 		%s %s
 		ORDER BY m.date ASC
-	`, trashFilter, folderFilter)
+	`, memberIDFilter, trashFilter, folderFilter)
 
-	rows, err := s.db.Query(messagesQuery, accountID, normalizedThreadID, normalizedThreadID, normalizedThreadID, folderID)
+	messageArgs := append([]any{accountID}, memberArgs...)
+	messageArgs = append(messageArgs, folderID)
+	rows, err := s.db.Query(messagesQuery, messageArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query thread messages: %w", err)
 	}
@@ -1691,6 +2198,75 @@ func normalizeMessageID(msgID string) string {
 	msgID = strings.TrimPrefix(msgID, "<")
 	msgID = strings.TrimSuffix(msgID, ">")
 	return msgID
+}
+
+// FindThreadIDsBatch resolves thread keys for a whole header batch with a
+// constant number of queries instead of one per reference.
+//
+// FindThreadID runs a query for every reference it is handed, so a 500-message
+// batch carrying 8 references each cost roughly 4,000 round-trips. The lookup
+// itself is a pure read of (account_id, message_id) -> thread key, so the
+// whole batch's references can be resolved from a single indexed query and
+// matched back in memory.
+//
+// The bracketed/bare variants FindThreadID probed are preserved: the map is
+// keyed on the exact stored message_id value, and the in-memory lookup tries
+// ref, "<ref>" and the unbracketed form in that order, so the first reference
+// that resolves is the same one the per-reference loop would have picked.
+// Earlier references win within a batch because the chunk scan is walked in
+// reference order.
+func (s *Store) FindThreadIDsBatch(accountID string, refs []string) (map[string]string, error) {
+	out := make(map[string]string, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(refs); start += maxBatchPlaceholders {
+		end := start + maxBatchPlaceholders
+		if end > len(refs) {
+			end = len(refs)
+		}
+		chunk := refs[start:end]
+
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, accountID)
+		formVariants := make([]string, 0, len(chunk)*3)
+		for _, ref := range chunk {
+			formVariants = append(formVariants, ref, "<"+ref+">", normalizeMessageID(ref))
+		}
+		for _, v := range formVariants {
+			args = append(args, v)
+		}
+
+		rows, err := s.db.Query(
+			"SELECT message_id, COALESCE(thread_id, id) FROM messages WHERE account_id = ? AND message_id IN ("+
+				makePlaceholders(len(formVariants))+")",
+			args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to batch thread lookup: %w", err)
+		}
+		for rows.Next() {
+			var storedMessageID, threadKey sql.NullString
+			if err := rows.Scan(&storedMessageID, &threadKey); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan thread lookup: %w", err)
+			}
+			if !storedMessageID.Valid || !threadKey.Valid || threadKey.String == "" {
+				continue
+			}
+			key := normalizeMessageID(storedMessageID.String)
+			if _, ok := out[key]; !ok {
+				out[key] = threadKey.String
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("failed to iterate thread lookup: %w", err)
+		}
+		rows.Close()
+	}
+
+	return out, nil
 }
 
 // FindThreadID finds the thread ID for a message based on References and In-Reply-To headers
@@ -2064,7 +2640,14 @@ func (s *Store) DeleteBatch(ids []string) error {
 	return nil
 }
 
-// GetByIDs retrieves multiple messages by their IDs
+// GetByIDs retrieves multiple messages by their IDs.
+//
+// Body payloads are deliberately not projected. Every caller is a bulk flag or
+// move path (app/actions.go, app/undo.go) that reads only id, account_id,
+// folder_id, uid, message_id and the flags, yet the old SELECT dragged
+// body_text/body_html -- potentially megabytes of HTML per row -- through the
+// driver for every row of the IN list. Callers that need a body use Get() or
+// GetByUID().
 // SpansMultipleAccounts returns true when the given message IDs belong
 // to two or more different accounts. Cheap (single SELECT COUNT
 // DISTINCT against the indexed account_id column) — used by bulk-action
@@ -2108,7 +2691,7 @@ func (s *Store) GetByIDs(ids []string) ([]*Message, error) {
 		SELECT id, account_id, folder_id, uid, message_id, in_reply_to, references_list, thread_id,
 		       subject, from_name, from_email, to_list, cc_list, bcc_list, reply_to, date,
 		       snippet, is_read, is_starred, is_answered, is_forwarded, is_draft, is_deleted,
-		       size, has_attachments, body_text, body_html, body_fetched,
+		       size, has_attachments, body_fetched,
 		       read_receipt_to, read_receipt_handled,
 		       smime_status, smime_signer_email, smime_signer_subject,
 		       smime_encrypted, (smime_raw_body IS NOT NULL) as has_smime,
@@ -2127,7 +2710,7 @@ func (s *Store) GetByIDs(ids []string) ([]*Message, error) {
 	var messages []*Message
 	for rows.Next() {
 		m := &Message{}
-		var messageID, inReplyTo, references, threadID, toList, ccList, bccList, replyTo, snippet, bodyText, bodyHTML, readReceiptTo sql.NullString
+		var messageID, inReplyTo, references, threadID, toList, ccList, bccList, replyTo, snippet, readReceiptTo sql.NullString
 		var smimeStatus, smimeSignerEmail, smimeSignerSubject sql.NullString
 		var pgpStatus, pgpSignerEmail, pgpSignerKeyID sql.NullString
 		var dateStr, receivedAtStr sql.NullString
@@ -2137,7 +2720,7 @@ func (s *Store) GetByIDs(ids []string) ([]*Message, error) {
 			&m.ID, &m.AccountID, &m.FolderID, &uidI64, &messageID, &inReplyTo, &references, &threadID,
 			&m.Subject, &m.FromName, &m.FromEmail, &toList, &ccList, &bccList, &replyTo, &dateStr,
 			&snippet, &m.IsRead, &m.IsStarred, &m.IsAnswered, &m.IsForwarded, &m.IsDraft, &m.IsDeleted,
-			&m.Size, &m.HasAttachments, &bodyText, &bodyHTML, &m.BodyFetched,
+			&m.Size, &m.HasAttachments, &m.BodyFetched,
 			&readReceiptTo, &m.ReadReceiptHandled,
 			&smimeStatus, &smimeSignerEmail, &smimeSignerSubject,
 			&m.SMIMEEncrypted, &m.HasSMIME,
@@ -2179,12 +2762,6 @@ func (s *Store) GetByIDs(ids []string) ([]*Message, error) {
 		}
 		if snippet.Valid {
 			m.Snippet = snippet.String
-		}
-		if bodyText.Valid {
-			m.BodyText = bodyText.String
-		}
-		if bodyHTML.Valid {
-			m.BodyHTML = bodyHTML.String
 		}
 		if readReceiptTo.Valid {
 			m.ReadReceiptTo = readReceiptTo.String
@@ -2536,4 +3113,3 @@ func highlightMatches(text, query string) string {
 
 	return highlighted
 }
-

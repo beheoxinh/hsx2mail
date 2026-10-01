@@ -146,6 +146,10 @@ export function ReadFileAsAttachment(arg1) {
   return window['go']['app']['ComposerApp']['ReadFileAsAttachment'](arg1);
 }
 
+export function ReadFileAsInlineImage(arg1) {
+  return window['go']['app']['ComposerApp']['ReadFileAsInlineImage'](arg1);
+}
+
 export function RefreshWindowConstraints() {
   return window['go']['app']['ComposerApp']['RefreshWindowConstraints']();
 }
@@ -164,6 +168,10 @@ export function SendMessage(arg1, arg2) {
 
 export function Shutdown(arg1) {
   return window['go']['app']['ComposerApp']['Shutdown'](arg1);
+}
+
+export function StageAttachment(arg1, arg2, arg3) {
+  return window['go']['app']['ComposerApp']['StageAttachment'](arg1, arg2, arg3);
 }
 
 export function Startup(arg1) {

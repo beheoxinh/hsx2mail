@@ -499,6 +499,8 @@ export function QuitApp():Promise<void>;
 
 export function ReadFileAsAttachment(arg1:string):Promise<app.ComposerAttachment>;
 
+export function ReadFileAsInlineImage(arg1:string):Promise<app.ComposerAttachment>;
+
 export function ReauthorizeAccount(arg1:string):Promise<void>;
 
 export function RebuildFTSIndex(arg1:string):Promise<void>;
@@ -615,11 +617,15 @@ export function SetSpellcheckLanguages(arg1:Array<string>):Promise<void>;
 
 export function SetStartHidden(arg1:boolean):Promise<void>;
 
+export function SetStartHiddenOverride(arg1:boolean):Promise<void>;
+
 export function SetTermsAccepted(arg1:boolean):Promise<void>;
 
 export function SetThemeMode(arg1:string):Promise<void>;
 
 export function ShowWindow():Promise<void>;
+
+export function StageAttachment(arg1:string,arg2:string,arg3:string):Promise<app.ComposerAttachment>;
 
 export function Star(arg1:Array<string>):Promise<void>;
 

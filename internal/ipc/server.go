@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +21,20 @@ const (
 
 	// ReadBufferSize is the buffer size for reading messages
 	ReadBufferSize = 64 * 1024
+
+	// MaxAuthFrameBytes caps the pre-authentication frame. AuthTimeout bounds
+	// time, not bytes, so without this a local client can push unbounded data
+	// into the decoder. The largest legitimate pre-auth frame is an
+	// `{"type":"auth","payload":{"token":"<64 hex>"}}` envelope — well under
+	// 512 bytes — so 4 KiB leaves ~8x headroom while capping a single
+	// unauthenticated connection's decoder at 4 KiB.
+	MaxAuthFrameBytes = 4 * 1024
+
+	// MaxConnections caps concurrently accepted IPC connections. Each one
+	// costs a socket fd plus a ReadBufferSize buffer, so an unbounded accept
+	// loop is a local fd-exhaustion primitive. Composers are spawned on demand
+	// and are short-lived, so a handful of concurrent windows is generous.
+	MaxConnections = 32
 )
 
 // serverClient represents a connected client.
@@ -43,6 +58,7 @@ type BaseServer struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+	conns    int // live connections, including pre-auth; guarded by mu
 }
 
 // NewBaseServer creates a new BaseServer with the given token manager.
@@ -173,12 +189,39 @@ func (s *BaseServer) AcceptLoop(ctx context.Context) error {
 			}
 		}
 
+		// Cap concurrent connections before spending a goroutine, a socket fd
+		// and a ReadBufferSize buffer on it.
+		if !s.tryAcquireConn() {
+			slog.Warn("connection limit reached, rejecting", "limit", MaxConnections)
+			_ = conn.Close()
+			continue
+		}
+
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.releaseConn()
 			s.handleConnection(conn)
 		}()
 	}
+}
+
+// tryAcquireConn reserves a connection slot, reporting false when MaxConnections
+// live connections already exist.
+func (s *BaseServer) tryAcquireConn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conns >= MaxConnections {
+		return false
+	}
+	s.conns++
+	return true
+}
+
+func (s *BaseServer) releaseConn() {
+	s.mu.Lock()
+	s.conns--
+	s.mu.Unlock()
 }
 
 // handleConnection manages a single client connection.
@@ -223,10 +266,18 @@ func (s *BaseServer) authenticateClient(client *serverClient) bool {
 	defer func() { _ = client.conn.SetReadDeadline(time.Time{}) }() // Clear deadline
 
 	reader := bufio.NewReaderSize(client.conn, ReadBufferSize)
-	decoder := json.NewDecoder(reader)
+	// Cap the pre-auth frame: AuthTimeout limits seconds, not bytes.
+	// MaxAuthFrameBytes+1 so a frame that exactly fills the budget plus a
+	// trailing byte is still detectable as oversized.
+	decoder := json.NewDecoder(io.LimitReader(reader, MaxAuthFrameBytes+1))
 
 	var msg Message
 	if err := decoder.Decode(&msg); err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			slog.Warn("oversized pre-auth frame", "client_id", client.id, "limit", MaxAuthFrameBytes)
+			s.sendAuthResponse(client, false, "auth frame too large")
+			return false
+		}
 		slog.Debug("failed to read auth message", "client_id", client.id, "error", err)
 		return false
 	}

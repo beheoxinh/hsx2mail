@@ -9,6 +9,14 @@ Each section below covers a single released-to-released schema transition with a
 - You upgraded to a newer Email Hub (e.g., 0.3.0) and want to go back to 0.2.5 for any reason.
 - Email Hub shows an error like *"This database was written by a newer Email Hub. Either upgrade Email Hub or follow the rollback guide..."* — the schema-version gate is refusing to open a DB that's newer than your running build.
 
+## Contents
+
+1. [Why migrations are forward-only](#why-migrations-are-forward-only-read-this-first) — the three structural reasons, stated plainly.
+2. [Backup and recovery runbook](#backup-and-recovery-runbook) — WAL-safe backup, restore, credential caveats, corruption repair. **This is the supported path back.**
+3. [v40 / v41 / v42 — current migrations, no shipped rollback](#v40--v41--v42--current-migrations-no-shipped-rollback).
+4. [What you need](#what-you-need), [What you'll lose](#what-youll-lose), [Procedure](#procedure).
+5. Per-transition rollback sections (`v39 → v30`, and any older ones) further down.
+
 ## What you'll lose
 
 Each rollback section lists the **data lost on rollback** for that migration. This is inherent: if the newer schema added columns that the older schema doesn't have, those values are dropped when you go back. Anything else round-trips losslessly.
@@ -23,6 +31,252 @@ Each rollback section lists the **data lost on rollback** for that migration. Th
 - The matching rollback script for your migration, downloaded from the repo's `tools/db/` directory on the branch/tag corresponding to the version that introduced the migration.
 
 ---
+
+## Why migrations are forward-only (read this first)
+
+SQLite has no down-migration. Hsx2Mail's `Migrate()` walks `migrations` upward, applies
+every version above the recorded one, and **never** un-applies. Three separate reasons,
+all of them structural rather than stylistic:
+
+1. **The ledger cannot express a down path.** `migrations` is
+   `(version INTEGER PRIMARY KEY, applied_at DATETIME)`. It records *that* a version ran,
+   not *how* to reverse it. There is no `down` column, no inverse-SQL column, and no
+   checksum — so a later build has no way to know what a given version did, let alone
+   undo it.
+2. **`ADD COLUMN` is not cleanly reversible.** Of 42 migrations, the large majority are
+   one or more `ALTER TABLE … ADD COLUMN`. SQLite (3.51.2, via `modernc.org/sqlite`
+   v1.42.2) *does* support `ALTER TABLE … DROP COLUMN`, but it refuses whenever the
+   column is indexed, part of a `UNIQUE`/primary key, or referenced by a constraint —
+   and it leaves the index behind if you drop a column an index uses. Reproduced:
+   ```
+   sqlite> create table t(a text);
+   sqlite> alter table t add column c text default 'x';
+   sqlite> alter table t drop column c;     -- succeeds, data in `a` survives
+   ```
+   but with `create index ix on t(c)` first:
+   ```
+   sqlite> alter table t drop column c;
+   Error: stepping, error in index ix after drop column: no such column: c
+   ```
+   The index survives, now dangling. Any column that a *later* migration indexed — and
+   v42 indexes eight — cannot be dropped at all until that index is dropped first. And a
+   dropped column takes its data with it; there is no undo.
+3. **Reconstructing a schema is lossy and can be wrong.** When a rollback is genuinely
+   needed, the only safe technique is the SQLite "swap table" dance: create a table with
+   the *old* shape, `INSERT … SELECT` the surviving columns, `DROP` the new table,
+   `ALTER TABLE … RENAME`. This preserves the columns you keep and **silently discards
+   the ones the migration added** — including any data the user put in them. It also
+   has to be written by hand, per release transition, and can be wrong.
+
+**What this means in practice.** A rollback script is a *reconstruction*, not an undo.
+`tools/db/rollback-v39-to-v30.sql` rebuilds the v30 schema (the pre-unified `contacts` +
+`carddav_contacts` tables, dropping `extension_secrets`, the per-account SMTP credential
+columns and `messages.body_failed`). That is a hand-written, per-transition artifact; it
+is not generated from `migrations.go` and it is not re-runnable. The app will never run
+it for you.
+
+**The supported path back is a backup**, not a rollback script. Restoring a pre-upgrade
+snapshot is lossless; running a rollback script is not. The runbook below is the primary
+procedure; the per-transition sections later in this file are the fallback.
+
+---
+
+## Backup and recovery runbook
+
+### Where the data lives
+
+One database file plus WAL sidecars. See `DATABASE.md` §1 for the per-platform paths.
+
+```
+hsx2mail.db        main database
+hsx2mail.db-wal    write-ahead log    (present whenever WAL mode is active)
+hsx2mail.db-shm    shared-memory index (present whenever WAL mode is active)
+```
+
+Also worth backing up, if you want a complete restore:
+
+- `<data>/attachments/staging/` — staged composer attachment blobs (7-day retention).
+- `<data>/extensions/*/data.db` — per-extension databases.
+- The OS keyring / `secret_service` entries and the AES fallback ciphertexts in
+  `accounts.encrypted_password`, `contact_sources.encrypted_password`, and the OAuth
+  token columns. **A database restore does not restore keyring entries** — see
+  "Restoring credentials" below.
+
+### Safe backup — the app is running
+
+Never `cp` the `.db` alone while the app is running. In WAL mode recent commits live in
+`-wal` and are *not* in the main file; a copy without the `-wal` is missing data. Use
+SQLite's online backup API, which takes a consistent snapshot without blocking writers:
+
+```bash
+DB=~/.local/share/hsx2mail/hsx2mail.db
+sqlite3 "$DB" ".backup '/tmp/hsx2mail-backup.db'"
+```
+
+`.backup` is the right tool for a hot backup. Verify it, then keep it:
+
+```bash
+sqlite3 /tmp/hsx2mail-backup.db 'PRAGMA integrity_check;'   # must print "ok"
+sqlite3 /tmp/hsx2mail-backup.db 'SELECT MAX(version) FROM migrations;'
+```
+
+### Safe backup — the app is closed
+
+With the app fully quit (menu Quit, or `pkill -f hsx2mail`), a plain file copy is fine
+because the WAL is checkpointed on the last clean close. To be certain, checkpoint first
+while it is still open (or from another shell just before quitting):
+
+```bash
+sqlite3 "$DB" 'PRAGMA wal_checkpoint(TRUNCATE);'
+cp "$DB"        /backup/hsx2mail.db
+```
+
+If you have already quit and the `-wal` still exists, copy all three files **together**
+into the same directory — that is still a consistent set:
+
+```bash
+cp "$DB" "$DB-wal" "$DB-shm" /backup/    # only when the app is not running
+```
+
+If you want a fresh `.db` with no sidecars, open the copy and checkpoint it:
+
+```bash
+sqlite3 /backup/hsx2mail.db 'PRAGMA wal_checkpoint(TRUNCATE);'
+```
+
+### Restoring from a backup
+
+1. **Quit the app completely.**
+2. Move the current database aside (do not delete it until the restore is verified):
+   ```bash
+   mv "$DB" "$DB.broken"
+   rm -f "$DB-wal" "$DB-shm"          # stale sidecars must not pair with the restored file
+   ```
+3. Copy the backup in as `hsx2mail.db`:
+   ```bash
+   cp /tmp/hsx2mail-backup.db "$DB"
+   chmod 600 "$DB"
+   ```
+4. Start the app. `Migrate()` will apply any migrations newer than the restored
+   `MAX(version)` — a backup from v38 opened by a v42 build simply migrates forward.
+5. Verify mail is present, then delete `$DB.broken`.
+
+### Restoring credentials
+
+The keyring is a separate, OS-owned store. A database restore brings back the *references*
+to keyring entries and the AES fallback ciphertexts, but:
+
+- If credentials were in the **keyring** and the keyring still has them, the restored DB
+  resolves them normally.
+- If the keyring was reset (new machine, `gnome-keyring` data cleared), the restored DB's
+  keyring lookups fail with `ErrKeyringUnavailable` and you must re-enter passwords /
+  re-authorise OAuth. The AES fallback ciphertexts in the DB *do* survive a DB restore
+  (they are inside it), provided the same key material is derived — see
+  `internal/credentials`. If the key is itself stored in the keyring, a keyring reset
+  means the fallback cannot be decrypted either and every credential must be re-entered.
+
+There is no supported way to move a keyring between machines. Plan credential re-entry
+into any restore-from-backup procedure.
+
+### Corruption and repair
+
+If the app will not open the database, or `PRAGMA integrity_check` reports errors:
+
+1. **Preserve the damaged file** (copy it aside) before doing anything.
+2. **Try a checkpoint** — a crash can leave a hot `-wal` that looks like corruption:
+   ```bash
+   sqlite3 "$DB" 'PRAGMA wal_checkpoint(TRUNCATE);'
+   ```
+3. **Re-run the check** on the main file alone (move `-wal`/`-shm` aside first):
+   ```bash
+   sqlite3 "$DB" 'PRAGMA integrity_check;'
+   ```
+4. **Recover what you can** into a fresh database and rebuild the schema by re-running
+   migrations on the empty file:
+   ```bash
+   # Extract rows table-by-table from the damaged file into a clean schema.
+   # The clean schema's version is created by starting the app once on an empty DB
+   # (or by applying migrations), then copying rows in.
+   ```
+5. If the damaged file will not even open, fall back to `.recover`:
+   ```bash
+   sqlite3 "$DB.broken" ".recover" | sqlite3 /tmp/recovered.db
+   sqlite3 /tmp/recovered.db 'PRAGMA integrity_check;'
+   ```
+6. **Last resort: restore a backup** (§ Restoring from a backup). This is why § Backup
+   above exists.
+
+A single malformed row in `messages_fts` (the FTS5 index) is recoverable — drop and
+rebuild the search index rather than the whole database. See `DATABASE.md` §7.
+
+---
+
+## v40 / v41 / v42 — current migrations, no shipped rollback
+
+Migrations **v40**, **v41** and **v42** are the current schema (v42 as of this writing).
+They have **no release-to-release rollback section** below because no shipped release has
+rolled *back* out of them yet. When the first one does, add a section here. What each one
+does, and what a rollback would cost, so you can decide before a real incident:
+
+| v | Change | Rolling back would… |
+|---|---|---|
+| 40 | `accounts.oauth_account_id` — a stable `"<tid>:<oid>"` identity captured from the mail ID token, so incremental consent is validated against an immutable pair instead of the mutable `email` claim (Microsoft). | Drop one `TEXT` column. Nullable, no data loss for rows that never set it. |
+| 41 | `accounts.secondary_sync_interval` — per-account reconciliation cadence for secondary folders (e.g. Archive), `0` meaning "derive from `sync_interval`, clamped to a 10-minute floor". `NOT NULL DEFAULT 0`. | Drop the column; every row falls back to deriving from `sync_interval`. No data loss. |
+| 42 | **Index-only.** Eight new indexes on `messages` (`idx_messages_needs_body`, `idx_messages_account_date`, `idx_messages_folder_thread_date`, `idx_messages_folder_conv`, `idx_messages_thread_norm`, `idx_messages_message_id_norm`, `idx_messages_in_reply_to_norm`, `idx_messages_account_message_id`). No column or table added. | This is the one clean case: `DROP INDEX` for all eight, in any order, no data touched. See `DATABASE.md` §11. |
+
+Because v42 is index-only, it is the *only* one of the three with a trivially correct
+rollback. v40 and v41 are single nullable/defaulted columns, so `ALTER TABLE … DROP
+COLUMN` works for them provided no index references them (none does today) — but do it
+with the app **closed** and verify with `PRAGMA integrity_check` afterwards.
+
+### Rollback recipe for v40 / v41 / v42 (closed app)
+
+```bash
+# 1. Quit the app.
+pkill -f hsx2mail
+
+# 2. Back up first. Always.
+cp ~/.local/share/hsx2mail/hsx2mail.db /tmp/before-v42-rollback.db
+
+# 3. v42 (indexes only) — safe, idempotent.
+sqlite3 ~/.local/share/hsx2mail/hsx2mail.db <<'SQL'
+DROP INDEX IF EXISTS idx_messages_needs_body;
+DROP INDEX IF EXISTS idx_messages_account_date;
+DROP INDEX IF EXISTS idx_messages_folder_thread_date;
+DROP INDEX IF EXISTS idx_messages_folder_conv;
+DROP INDEX IF EXISTS idx_messages_thread_norm;
+DROP INDEX IF EXISTS idx_messages_message_id_norm;
+DROP INDEX IF EXISTS idx_messages_in_reply_to_norm;
+DROP INDEX IF EXISTS idx_messages_account_message_id;
+SQL
+
+# 4. v41 / v40 (columns) — only if you actually need the old shape.
+sqlite3 ~/.local/share/hsx2mail/hsx2mail.db <<'SQL'
+PRAGMA legacy_alter_table = OFF;   -- keep foreign_keys enforced during the rename
+ALTER TABLE accounts DROP COLUMN secondary_sync_interval;   -- v41
+ALTER TABLE accounts DROP COLUMN oauth_account_id;           -- v40
+SQL
+
+# 5. Update the ledger so Migrate() does not re-apply them on next start.
+sqlite3 ~/.local/share/hsx2mail/hsx2mail.db \
+  "DELETE FROM migrations WHERE version IN (40, 41, 42);"
+
+# 6. Verify.
+sqlite3 ~/.local/share/hsx2mail/hsx2mail.db 'PRAGMA integrity_check;'
+sqlite3 ~/.local/share/hsx2mail/hsx2mail.db 'SELECT MAX(version) FROM migrations;'
+```
+
+Note step 5. The ledger is authoritative; dropping the columns without deleting the
+`migrations` rows would make the next `Migrate()` try to `ALTER TABLE … ADD COLUMN` them
+back and fail with "duplicate column name". Conversely, deleting the ledger rows without
+dropping the objects leaves the schema ahead of the ledger, which `Migrate()` handles
+idempotently (its `ADD COLUMN` would fail — so you do need both steps, in that order).
+
+**Caveat, stated plainly:** step 4 is destructive to any data in those columns, and
+`ALTER TABLE … DROP COLUMN` is not a supported operation for a shipped application to
+rely on. If a rollback is not a genuine emergency, restore a backup instead (§ Restoring
+from a backup). These steps exist so an operator is not stuck, not because they are the
+recommended path.
 
 ### Procedure
 

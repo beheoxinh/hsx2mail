@@ -39,6 +39,13 @@ type IdleConfig struct {
 	ShutdownTimeout time.Duration
 }
 
+// closeTimeout bounds every graceful-then-hard socket teardown in this
+// package: the IDLE shutdown wait and the LOGOUT in Client.Close. A server
+// that stops answering must never be able to block shutdown (task 3-16).
+//
+// A var, not a const, so tests can shrink it.
+var closeTimeout = 5 * time.Second
+
 // DefaultIdleConfig returns sensible defaults for IDLE
 func DefaultIdleConfig() IdleConfig {
 	return IdleConfig{
@@ -48,7 +55,7 @@ func DefaultIdleConfig() IdleConfig {
 		MaxReconnectAttempts: 10,
 		EventSendTimeout:     2 * time.Second,  // Don't block forever on event send
 		HealthCheckEnabled:   true,             // Verify connection before IDLE
-		ShutdownTimeout:      5 * time.Second,  // Graceful shutdown timeout
+		ShutdownTimeout:      closeTimeout,    // Graceful shutdown timeout
 	}
 }
 
@@ -97,6 +104,23 @@ func (ic *IdleConnection) sendEvent(event MailEvent) {
 	}
 }
 
+// takeClient detaches the current client under the lock and returns it so the
+// caller can close the socket *outside* the mutex.
+//
+// Closing matters here: imapclient.Client.Close waits for its decoder
+// goroutine to drain. Doing that while holding mu would stall everything else
+// touching this connection — including the run() defer that has to take mu to
+// mark itself stopped, which is exactly the shape of a shutdown deadlock
+// (Phase 3 task 3-16).
+func (ic *IdleConnection) takeClient() *imapclient.Client {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
+	c := ic.client
+	ic.client = nil
+	return c
+}
+
 // Start starts the IDLE loop for this connection
 func (ic *IdleConnection) Start(ctx context.Context, events chan<- MailEvent) {
 	ic.mu.Lock()
@@ -134,12 +158,10 @@ func (ic *IdleConnection) Stop() {
 			ic.log.Debug().Msg("IDLE connection stopped gracefully")
 		case <-time.After(timeout):
 			ic.log.Warn().Msg("IDLE connection shutdown timed out, forcing close")
-			ic.mu.Lock()
-			if ic.client != nil {
-				ic.client.Close()
-				ic.client = nil
+			// Detach under the lock, close outside it.
+			if c := ic.takeClient(); c != nil {
+				_ = c.Close()
 			}
-			ic.mu.Unlock()
 		}
 	}
 }
@@ -149,14 +171,19 @@ func (ic *IdleConnection) run(ctx context.Context) {
 	defer func() {
 		ic.mu.Lock()
 		ic.running = false
-		if ic.client != nil {
-			ic.client.Close()
-			ic.client = nil
-		}
+		// Detach the socket under the lock, close it below once mu is free:
+		// the close waits for the decoder goroutine to drain and must never
+		// block a lock the rest of this connection needs (task 3-16).
+		c := ic.client
+		ic.client = nil
 		if ic.doneCh != nil {
 			close(ic.doneCh)
 		}
 		ic.mu.Unlock()
+
+		if c != nil {
+			_ = c.Close()
+		}
 	}()
 
 	backoff := ic.config.ReconnectBackoff
@@ -215,13 +242,13 @@ func (ic *IdleConnection) run(ctx context.Context) {
 		// Run IDLE cycle
 		if err := ic.idleCycle(ctx); err != nil {
 			ic.log.Warn().Err(err).Msg("IDLE cycle failed")
-			// Close the connection so we reconnect on next iteration
-			ic.mu.Lock()
-			if ic.client != nil {
-				ic.client.Close()
-				ic.client = nil
+			// Close the connection so we reconnect on next iteration. This is
+			// an error path against a possibly-wedged server, so it uses the
+			// hard socket close (imapclient.Client.Close) and does it outside
+			// the mutex.
+			if c := ic.takeClient(); c != nil {
+				_ = c.Close()
 			}
-			ic.mu.Unlock()
 		}
 	}
 }

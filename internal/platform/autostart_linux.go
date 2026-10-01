@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/godbus/dbus/v5"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
+	"github.com/godbus/dbus/v5"
 )
 
 const (
@@ -108,14 +108,20 @@ func (m *linuxAutostartManager) portalRequestBackground(autostart bool) error {
 	defer conn.RemoveSignal(signals)
 
 	// Build options for RequestBackground.
-	// Pass commandline explicitly to avoid broken escaping from the portal's
-	// auto-generated flatpak run command. The start-hidden behavior is
-	// controlled by the app's own settings, not a CLI flag.
+	// Pass commandline explicitly so the generated autostart entry is a real,
+	// runnable command. See autostartCommandline for the Flatpak case. The
+	// start-hidden is appended by execCommand (XDG path) and here (Flatpak
+	// portal) so both channels boot window-less; see execCommand.
 	options := map[string]dbus.Variant{
 		"handle_token": dbus.MakeVariant(handleToken),
 		"reason":       dbus.MakeVariant("Start automatically on login and sync email in the background"),
 		"autostart":    dbus.MakeVariant(autostart),
-		"commandline":  dbus.MakeVariant([]string{"hsx2mail"}),
+		// The Background portal writes this verbatim into an XDG autostart
+		// .desktop, so it must be runnable from a fresh login session rather
+		// than from inside our own sandbox. A bare "hsx2mail" only resolves if
+		// the host has a native binary on PATH; under Flatpak it does not, and
+		// the entry then fails silently at every subsequent login.
+		"commandline": dbus.MakeVariant(autostartCommandline()),
 	}
 
 	obj := conn.Object("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
@@ -228,11 +234,48 @@ func (m *linuxAutostartManager) autostartDir() (string, error) {
 	return filepath.Join(configDir, "autostart"), nil
 }
 
-// execCommand returns the path to the current executable.
+// execCommand returns the Exec= value for the XDG autostart entry.
+//
+// The absolute path is quoted per the desktop-entry specification: unquoted,
+// any space in the path splits the value into two argv entries and the entry
+// stops launching. Falls back to the bare program name when the executable
+// path is unavailable, which is correct for anything on PATH.
 func (m *linuxAutostartManager) execCommand() string {
 	exe, err := os.Executable()
-	if err != nil {
+	if err != nil || exe == "" {
 		return "hsx2mail"
 	}
-	return exe
+	// Desktop Entry spec: reserved characters in a value must be quoted.
+	// Backslash-escape the characters that would otherwise end the token.
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range exe {
+		switch r {
+		case '"', '\\', '$', '`':
+			b.WriteRune('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+
+	// The autostart entry is a *background* entry: it must come up in the
+	// tray, never as a window in the user's face at login. The flag also
+	// makes the entry self-describing, so a stale start_hidden setting cannot
+	// turn a session login into a visible launch (Phase 3 tasks 3-04/3-05).
+	return b.String() + " --start-hidden"
+}
+
+// autostartCommandline returns the argv the Background portal should persist
+// into the XDG autostart .desktop entry.
+//
+// Under Flatpak the binary lives inside the sandbox and is not on the host
+// PATH, so the entry must re-enter through `flatpak run <app-id>`. Outside
+// Flatpak the executable's own name is correct.
+func autostartCommandline() []string {
+	if id := os.Getenv("FLATPAK_ID"); id != "" {
+		return []string{"flatpak", "run", id, "--start-hidden"}
+	}
+	return []string{"hsx2mail", "--start-hidden"}
 }

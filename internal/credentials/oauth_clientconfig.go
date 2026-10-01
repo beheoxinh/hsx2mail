@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	gokeyring "github.com/zalando/go-keyring"
 )
 
 // =============================================================================
@@ -131,10 +129,8 @@ func (s *Store) GetOAuthTokensForClientConfig(accountID, clientConfigID string) 
 // token row and its keyring entries. Does not touch other rows for the same
 // account (e.g., deleting Calendar tokens leaves Mail tokens intact).
 func (s *Store) DeleteOAuthTokensForClientConfig(accountID, clientConfigID string) error {
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, accountID+":"+clientConfigID+":access_token")
-		_ = gokeyring.Delete(serviceName, accountID+":"+clientConfigID+":refresh_token")
-	}
+	s.keyringDelete(accountID + ":" + clientConfigID + ":access_token")
+	s.keyringDelete(accountID + ":" + clientConfigID + ":refresh_token")
 
 	_, err := s.db.Exec(
 		"DELETE FROM oauth_tokens WHERE account_id = ? AND client_config_id = ?",
@@ -227,12 +223,12 @@ func (s *Store) setOAuthAccessTokenForClientConfig(accountID, clientConfigID, to
 	if token == "" {
 		return nil
 	}
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, accountID+":"+clientConfigID+":access_token", token)
-		if err == nil {
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store extension access token in keyring")
+	// Fail closed on a live keyring failure: dropping an extension access token
+	// into the DB instead is a silent downgrade the user never sees.
+	if inKeyring, err := s.keyringSet(accountID+":"+clientConfigID+":access_token", token); err != nil {
+		return fmt.Errorf("extension access token not stored: %w", err)
+	} else if inKeyring {
+		return nil
 	}
 	// Mail configs reuse the legacy accounts-table encrypted fallback for
 	// back-compat with tokens written before migration v29.
@@ -248,11 +244,10 @@ func (s *Store) setOAuthAccessTokenForClientConfig(accountID, clientConfigID, to
 
 func (s *Store) getOAuthAccessTokenForClientConfig(accountID, clientConfigID string) (string, error) {
 	// New per-(account, client_config) keyring entry — always preferred.
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, accountID+":"+clientConfigID+":access_token")
-		if err == nil {
-			return token, nil
-		}
+	if token, found, err := s.keyringGet(accountID + ":" + clientConfigID + ":access_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 	// Mail configs additionally honor the legacy single-config storage paths
 	// (legacy keyring key OR encrypted DB column) for back-compat with tokens
@@ -267,12 +262,11 @@ func (s *Store) setOAuthRefreshTokenForClientConfig(accountID, clientConfigID, t
 	if token == "" {
 		return nil
 	}
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, accountID+":"+clientConfigID+":refresh_token", token)
-		if err == nil {
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store extension refresh token in keyring")
+	// Fail closed on a live keyring failure.
+	if inKeyring, err := s.keyringSet(accountID+":"+clientConfigID+":refresh_token", token); err != nil {
+		return fmt.Errorf("extension refresh token not stored: %w", err)
+	} else if inKeyring {
+		return nil
 	}
 	if isMailClientConfig(clientConfigID) {
 		return s.setOAuthRefreshToken(accountID, token)
@@ -281,11 +275,10 @@ func (s *Store) setOAuthRefreshTokenForClientConfig(accountID, clientConfigID, t
 }
 
 func (s *Store) getOAuthRefreshTokenForClientConfig(accountID, clientConfigID string) (string, error) {
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, accountID+":"+clientConfigID+":refresh_token")
-		if err == nil {
-			return token, nil
-		}
+	if token, found, err := s.keyringGet(accountID + ":" + clientConfigID + ":refresh_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 	if isMailClientConfig(clientConfigID) {
 		return s.getOAuthRefreshToken(accountID)

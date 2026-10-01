@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import path from 'path'
@@ -31,9 +32,13 @@ const WAILSJS_DIR = path.resolve(__dirname, './wailsjs')
 const NODE_MODULES_DIR = path.resolve(__dirname, './node_modules')
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [svelte()],
   resolve: {
+    // Under vitest the Svelte plugin resolves the SSR build, so onMount is
+    // unavailable and nothing can mount. The browser condition picks the client
+    // build; the app is a SPA, so this matches production semantics too.
+    ...(mode === 'test' ? { conditions: ['browser'] } : {}),
     alias: {
       '$lib': path.resolve('./src/lib'),
       '$': path.resolve('./src'),
@@ -75,4 +80,14 @@ export default defineConfig({
       allow: ['..', EXTENSIONS_DIR],
     },
   },
-})
+  test: {
+    // The virtualization tests need a DOM: measured row heights and scrollTop
+    // are both zero in node, and the virtualizer sizes its window from them.
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    setupFiles: ['src/test/setup.ts'],
+    // The MessageList tests need real node_modules from frontend/ while
+    // mounting components that live under extensions/ (they import $lib).
+    server: { deps: { inline: [/@iconify/] } },
+  },
+}))

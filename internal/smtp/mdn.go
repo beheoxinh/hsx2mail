@@ -50,10 +50,21 @@ func BuildMDN(originalMsg *message.Message, fromName, fromEmail string, disposit
 
 	var buf bytes.Buffer
 
+	// Every value below comes from a received message, so it is attacker
+	// controlled. These headers are written as raw bytes, not via a MIME
+	// encoder, so a CR/LF in the source would let a sender inject arbitrary
+	// headers (or a whole body) into the receipt we send back.
+	safeTo := stripCRLF(originalMsg.ReadReceiptTo)
+	safeSubject := stripCRLF(originalMsg.Subject)
+	safeOriginalID := stripCRLF(originalMsg.MessageID)
+	safeFromEmail := stripCRLF(fromEmail)
+	safeFromName := stripCRLF(fromName)
+	safeRecipient := stripCRLF(recipientEmail)
+
 	// Write headers
-	buf.WriteString(fmt.Sprintf("From: %s\r\n", formatAddress(fromName, fromEmail)))
-	buf.WriteString(fmt.Sprintf("To: %s\r\n", originalMsg.ReadReceiptTo))
-	buf.WriteString(fmt.Sprintf("Subject: Read: %s\r\n", originalMsg.Subject))
+	buf.WriteString(fmt.Sprintf("From: %s\r\n", formatAddress(safeFromName, safeFromEmail)))
+	buf.WriteString(fmt.Sprintf("To: %s\r\n", safeTo))
+	buf.WriteString(fmt.Sprintf("Subject: Read: %s\r\n", safeSubject))
 	buf.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
 	buf.WriteString(fmt.Sprintf("Message-ID: %s\r\n", msgID))
 	buf.WriteString("MIME-Version: 1.0\r\n")
@@ -65,11 +76,11 @@ func BuildMDN(originalMsg *message.Message, fromName, fromEmail string, disposit
 	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	buf.WriteString("\r\n")
 	buf.WriteString("Your message\r\n\r\n")
-	buf.WriteString(fmt.Sprintf("  To: %s\r\n", fromEmail))
-	buf.WriteString(fmt.Sprintf("  Subject: %s\r\n", originalMsg.Subject))
+	buf.WriteString(fmt.Sprintf("  To: %s\r\n", safeFromEmail))
+	buf.WriteString(fmt.Sprintf("  Subject: %s\r\n", safeSubject))
 	buf.WriteString(fmt.Sprintf("  Sent: %s\r\n", originalMsg.Date.Format(time.RFC1123Z)))
 	buf.WriteString("\r\n")
-	buf.WriteString(fmt.Sprintf("was %s on %s.\r\n", disposition, time.Now().Format(time.RFC1123Z)))
+	buf.WriteString(fmt.Sprintf("was %s on %s.\r\n", stripCRLF(string(disposition)), time.Now().Format(time.RFC1123Z)))
 	buf.WriteString("\r\n")
 
 	// Write machine-readable disposition notification part
@@ -78,11 +89,11 @@ func BuildMDN(originalMsg *message.Message, fromName, fromEmail string, disposit
 	buf.WriteString("\r\n")
 	buf.WriteString("Reporting-UA: Email Hub/1.0\r\n")
 	if originalMsg.MessageID != "" {
-		buf.WriteString(fmt.Sprintf("Original-Message-ID: %s\r\n", originalMsg.MessageID))
+		buf.WriteString(fmt.Sprintf("Original-Message-ID: %s\r\n", safeOriginalID))
 	}
-	buf.WriteString(fmt.Sprintf("Final-Recipient: rfc822; %s\r\n", fromEmail))
-	buf.WriteString(fmt.Sprintf("Original-Recipient: rfc822; %s\r\n", recipientEmail))
-	buf.WriteString(fmt.Sprintf("Disposition: manual-action/MDN-sent-manually; %s\r\n", disposition))
+	buf.WriteString(fmt.Sprintf("Final-Recipient: rfc822; %s\r\n", safeFromEmail))
+	buf.WriteString(fmt.Sprintf("Original-Recipient: rfc822; %s\r\n", safeRecipient))
+	buf.WriteString(fmt.Sprintf("Disposition: manual-action/MDN-sent-manually; %s\r\n", stripCRLF(string(disposition))))
 	buf.WriteString("\r\n")
 
 	// Close multipart
@@ -126,4 +137,11 @@ func formatAddress(name, email string) string {
 		return fmt.Sprintf(`"%s" <%s>`, strings.ReplaceAll(name, `"`, `\"`), email)
 	}
 	return fmt.Sprintf("%s <%s>", name, email)
+}
+
+// stripCRLF removes CR and LF so a value taken from a received message cannot
+// terminate the header it is being written into. Delegates to the shared header
+// sanitizer so MDN, the message builder, and attachments all agree.
+func stripCRLF(s string) string {
+	return sanitizeHeaderValue(s)
 }

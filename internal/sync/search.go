@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/beheoxinh/hsx2mail/internal/message"
 )
 
 // IMAPSearchResponse wraps search results with the total count of matching UIDs.

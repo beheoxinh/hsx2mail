@@ -1327,4 +1327,58 @@ var migrations = []Migration{
 			ALTER TABLE accounts ADD COLUMN secondary_sync_interval INTEGER NOT NULL DEFAULT 0;
 		`,
 	},
+	{
+		Version: 42,
+		SQL: `
+			-- Index-only migrations for the Phase 2 sync/data-layer work. No
+			-- schema change, so a rollback is just DROP INDEX; every index below
+			-- is a pure accelerator for a query that already exists.
+
+			-- Body-fetch candidate queue (GetMessagesWithoutBody*). The partial
+			-- predicate matches the "never fetched and not permanently failed"
+			-- branch exactly, so that branch becomes an index range scan that
+			-- is already in date order instead of a folder scan plus a temp
+			-- sort. The separate "fetched but empty" self-heal branch cannot be
+			-- served by any index (it reads body_text/body_html) and is left as
+			-- a scan, UNION-ed with a per-branch LIMIT so the common case wins.
+			CREATE INDEX IF NOT EXISTS idx_messages_needs_body
+				ON messages(folder_id, date DESC)
+				WHERE body_fetched = 0 AND body_failed = 0;
+
+			-- Retention prune (DeleteOlderThanInFolder) and any account-wide
+			-- date range walk.
+			CREATE INDEX IF NOT EXISTS idx_messages_account_date
+				ON messages(account_id, date);
+
+			-- Conversation open and per-thread flag sync: folder, then thread,
+			-- then chronological order.
+			CREATE INDEX IF NOT EXISTS idx_messages_folder_thread_date
+				ON messages(folder_id, thread_id, date DESC);
+
+			-- Conversation list. The list and count queries both group on
+			-- COALESCE(thread_id, id); an expression index with the same
+			-- expression lets SQLite feed the GROUP BY straight from the index
+			-- instead of building a temp B-tree per page.
+			CREATE INDEX IF NOT EXISTS idx_messages_folder_conv
+				ON messages(folder_id, COALESCE(thread_id, id));
+
+			-- GetConversation's three-way thread predicate. The stored values
+			-- keep their angle brackets (IMAP delivers them that way), so the
+			-- query has to strip them with REPLACE(). Indexing the stripped
+			-- form lets those three comparisons become index seeks instead of
+			-- an account-wide scan. account_id leads each index so the
+			-- predicate's mandatory account filter is usable too.
+			CREATE INDEX IF NOT EXISTS idx_messages_thread_norm
+				ON messages(account_id, REPLACE(REPLACE(COALESCE(thread_id, id), '<', ''), '>', ''));
+			CREATE INDEX IF NOT EXISTS idx_messages_message_id_norm
+				ON messages(account_id, REPLACE(REPLACE(message_id, '<', ''), '>', ''));
+			CREATE INDEX IF NOT EXISTS idx_messages_in_reply_to_norm
+				ON messages(account_id, REPLACE(REPLACE(in_reply_to, '<', ''), '>', ''));
+
+			-- Batched FindThreadID: one lookup for every reference in the
+			-- batch, keyed on (account_id, message_id).
+			CREATE INDEX IF NOT EXISTS idx_messages_account_message_id
+				ON messages(account_id, message_id);
+		`,
+	},
 }

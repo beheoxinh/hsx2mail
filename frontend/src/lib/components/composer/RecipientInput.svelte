@@ -6,7 +6,7 @@
 </script>
 
 <script lang="ts">
-  import { getContext } from 'svelte'
+import { getContext } from 'svelte'
   import Icon from '@iconify/svelte'
   // @ts-ignore - Wails generated imports
   import { smtp, contact } from '../../../../wailsjs/go/models'

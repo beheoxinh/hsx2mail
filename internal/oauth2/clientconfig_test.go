@@ -97,4 +97,3 @@ func TestClientConfigForID_OverrideReturningFalseFallsThrough(t *testing.T) {
 		t.Fatalf("fallthrough: got ok=%v id=%q, want true/A", ok, creds.ClientID)
 	}
 }
-

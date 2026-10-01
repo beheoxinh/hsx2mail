@@ -32,6 +32,13 @@ export function applyTheme(themeName: ThemeMode) {
   const dark = scheme === 'dark'
   document.documentElement.classList.toggle('dark', dark)
   isDarkActive = dark
+  // Save to localStorage for next session
+  try {
+    localStorage.setItem('hsx2mail-theme', dark ? 'dark' : 'light')
+  } catch {
+    // Storage can be unavailable (private mode, sandboxed storage); the
+    // in-memory value still applies for this session.
+  }
 }
 
 /** Resolve a ThemeMode (which may be 'system') to a concrete theme and apply it. */
@@ -49,6 +56,22 @@ export function applyThemeFromMode(mode: ThemeMode) {
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   applyTheme(mediaQuery.matches ? 'dark' : 'light')
+}
+
+/**
+ * Apply a theme pushed from the main window over IPC.
+ *
+ * The payload crosses the bridge as a plain string, so it is validated here
+ * rather than trusted: anything other than the three known modes is ignored,
+ * because applyTheme() writes the value into a `data-theme` attribute and an
+ * unexpected string would leave the document themed inconsistently.
+ */
+export function handleThemeChanged(newTheme: string) {
+  if (newTheme === 'light' || newTheme === 'dark' || newTheme === 'system') {
+    applyThemeFromMode(newTheme as ThemeMode)
+  } else {
+    console.warn('[theme] ignoring unknown theme from IPC:', newTheme)
+  }
 }
 
 /**
@@ -88,13 +111,4 @@ export function handleSystemThemeEvent(newTheme: string) {
 export function handleMediaQueryChange(matches: boolean) {
   if (getThemeMode() !== 'system' || portalThemeAvailable) return
   applyTheme(matches ? 'dark' : 'light')
-}
-
-/** Handle 'theme:changed' IPC events for composer windows. */
-export function handleThemeChanged(newTheme: string) {
-  if (newTheme === 'system') {
-    applyThemeFromMode('system')
-    return
-  }
-  applyTheme(newTheme as ThemeMode)
 }

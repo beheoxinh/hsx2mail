@@ -67,23 +67,25 @@ all: build
 
 ## Build Targets
 
-# Build production binary
+# Build production binary.
+#
+# Delegates to ./build.sh rather than calling `wails build` directly: build.sh
+# resolves the Go toolchain to the version go.mod pins (the Wails CLI cannot read
+# a newer toolchain's export data), runs the static checks and the test suite,
+# and also builds the OAuth credential helper the app looks for next to itself.
+# One build path keeps `make build` and ./build.sh from disagreeing.
 build:
 	@echo "Building Email Hub..."
-	@if [ -z "$(GOOGLE_CLIENT_ID)" ] && [ -z "$(MICROSOFT_CLIENT_ID)" ]; then \
-		echo "Warning: No OAuth credentials configured. Gmail/Outlook OAuth will not work."; \
-		echo "See .env.example for required variables."; \
-	fi
-	wails build -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS)
+	./build.sh
 ifeq ($(UNAME_S),Darwin)
 	@echo "Ad-hoc signing Email Hub.app (required for macOS notifications)..."
 	codesign --force --deep --sign - build/bin/Hsx2Mail.app
 endif
 
-# Build for Linux specifically
+# Build for Linux specifically -- same single build path as `make build`.
 build-linux:
 	@echo "Building Email Hub for Linux..."
-	wails build -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS),linux,production
+	./build.sh
 
 # Build Flatpak (recommended for Linux distribution)
 flatpak:
@@ -96,9 +98,12 @@ flatpak-dev:
 	./build/flatpak/build-flatpak.sh
 
 # Run in development mode with hot reload
+# Run in development mode with hot reload.
+# Runs through the shared toolchain resolver first, so `wails dev` uses the Go
+# that go.mod pins instead of whatever `go` happens to be first on PATH.
 dev:
 	@echo "Starting Email Hub in development mode..."
-	wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS)
+	@. ./scripts/toolchain.sh && select_go >/dev/null && wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS)
 
 # Run in development mode with Go's race detector enabled. Builds significantly
 # slower and adds ~5-10x runtime overhead, but instruments every memory access
@@ -107,7 +112,7 @@ dev:
 # reproduce the crash and the detector report points right at it.
 dev-race:
 	@echo "Starting Email Hub in development mode with -race..."
-	wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS) -race
+	@. ./scripts/toolchain.sh && select_go >/dev/null && wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS) -race
 
 # Generate Wails TypeScript bindings
 generate:
@@ -121,8 +126,35 @@ test:
 	@echo "Running tests..."
 	go test ./...
 
-# Run all linters (Go + frontend)
-lint: lint-go lint-frontend
+# Launch the real binary headless and check it comes up: opens its database,
+# migrates it, creates its data dirs, shuts down on SIGTERM. Complements the
+# unit tests, which never exercise the built binary.
+smoke:
+	@echo "Running smoke test against build/bin/hsx2mail..."
+	@./scripts/smoke-test.sh
+
+# Run Go tests with the race detector (sync engine runs many goroutines)
+test-race:
+	@echo "Running tests with race detector..."
+	go test -race -count=1 ./...
+
+# Run go vet
+vet:
+	@echo "Running go vet..."
+	go vet ./...
+
+# Fail when a function opens a transaction but never writes. The DSN sets
+# _txlock=immediate, so BEGIN takes SQLite's global write lock: a read-only
+# transaction blocks every other writer for its lifetime.
+check-tx:
+	@echo "Checking for read-only transactions..."
+	go run ./tools/db/txcheck
+
+# Run the full quality gate: build + vet + tests + linters + type checks
+check: build vet test test-frontend lint check-tx smoke
+
+# Run all linters and type checks (Go + frontend)
+lint: lint-go lint-frontend check-frontend check-offline-icons check-tx unused-frontend
 
 # Run Go linter (requires golangci-lint)
 lint-go:
@@ -133,6 +165,28 @@ lint-go:
 lint-frontend:
 	@echo "Running frontend linter..."
 	cd frontend && npm run lint
+
+# Type-check Svelte + TypeScript
+check-frontend:
+	@echo "Running svelte-check..."
+	cd frontend && npm run check
+
+# Run frontend tests (vitest)
+test-frontend:
+	@echo "Running frontend tests..."
+	cd frontend && npm run test
+
+# Verify every icon name resolves to an offline-bundled Iconify collection
+check-offline-icons:
+	@echo "Checking offline icon coverage..."
+	cd frontend && node scripts/check-offline-icons.mjs
+
+# Report unused frontend dependencies, files and exports (knip).
+# Now clean: unused deps/files are gone, and the remaining export shapes that
+# produced false positives are excluded in frontend/knip.json with a reason.
+unused-frontend:
+	@echo "Running knip (unused deps/exports)..."
+	cd frontend && npm run knip
 
 # Format Go code
 fmt:

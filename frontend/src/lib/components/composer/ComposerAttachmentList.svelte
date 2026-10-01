@@ -3,11 +3,14 @@
   import { formatFileSize, getFileIcon } from './composerUtils'
   import { _ } from '$lib/i18n'
 
+  // The list only renders filename + size, so a staged attachment (no `data`,
+  // just a stagingId) displays the same as a legacy base64 one.
   interface Attachment {
     filename: string
     contentType: string
     size: number
-    data: string
+    stagingId?: string
+    data?: string
   }
 
   interface Props {

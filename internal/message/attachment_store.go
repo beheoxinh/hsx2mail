@@ -211,6 +211,20 @@ func (s *AttachmentStore) CreateBatch(attachments []*Attachment) error {
 	}
 	defer stmt.Close()
 
+	// Replace, don't accumulate: a body can be reprocessed (retry, header
+	// recovery, force re-sync) and a bare INSERT would leave the previous
+	// run's rows in place, duplicating every attachment on the message.
+	seen := make(map[string]bool, len(attachments))
+	for _, a := range attachments {
+		if a.MessageID == "" || seen[a.MessageID] {
+			continue
+		}
+		seen[a.MessageID] = true
+		if _, err := tx.Exec(`DELETE FROM attachments WHERE message_id = ?`, a.MessageID); err != nil {
+			return fmt.Errorf("failed to clear attachments for message %s: %w", a.MessageID, err)
+		}
+	}
+
 	log := logging.WithComponent("attachment_store")
 	for _, a := range attachments {
 		// Only store content for inline attachments to save space

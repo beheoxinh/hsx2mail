@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	goImap "github.com/emersion/go-imap/v2"
 	"github.com/beheoxinh/hsx2mail/internal/folder"
 	"github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/undo"
+	goImap "github.com/emersion/go-imap/v2"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -238,6 +238,9 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 		if len(folderCounts) > 0 {
 			wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
 		}
+		// The shell badge follows the same counts; recompute after the write so
+		// it drops to zero as soon as the user reads the last unread message.
+		a.refreshLauncherBadge()
 	}()
 
 	// Sync to IMAP in background with retry
@@ -380,10 +383,29 @@ func (a *App) syncFlagsToIMAP(messages []*message.Message, folderID, flagType st
 
 // MoveToFolder moves messages to a specified folder
 func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
+	return a.moveToFolder(messageIDs, destFolderID, true)
+}
+
+// moveToFolder is MoveToFolder with an explicit "record an undo entry" decision.
+//
+// The decision is a parameter rather than a field on App: the move completes in
+// a background goroutine after a network round-trip, so a process-global
+// suppress flag would be cleared by the time the push happens, and would
+// suppress unrelated concurrent moves while Undo was still running.
+func (a *App) moveToFolder(messageIDs []string, destFolderID string, pushUndo bool) error {
+	_, err := a.moveToFolderCollect(messageIDs, destFolderID, pushUndo)
+	return err
+}
+
+// moveToFolderCollect performs the move and returns the undo commands it built
+// (in partition order) so a caller that spans several accounts can push them as
+// one composite entry instead of one per account.
+func (a *App) moveToFolderCollect(messageIDs []string, destFolderID string, pushUndo bool) ([]*undo.MoveCommand, error) {
 	log := logging.WithComponent("app")
+	var cmds []*undo.MoveCommand
 
 	if len(messageIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Cross-account selections (Unified Inbox or any mixed-account multi-
@@ -393,20 +415,21 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 	// fires exactly once per partition with a correct full-batch
 	// classification.
 	if spans, _ := a.messageStore.SpansMultipleAccounts(messageIDs); spans {
-		return a.moveToFolderCrossAccount(messageIDs, destFolderID)
+		cmds, err := a.moveToFolderCrossAccount(messageIDs, destFolderID, pushUndo)
+		return cmds, err
 	}
 
 	messages, err := a.messageStore.GetByIDs(messageIDs)
 	if err != nil {
-		return fmt.Errorf("failed to get messages: %w", err)
+		return nil, fmt.Errorf("failed to get messages: %w", err)
 	}
 	if len(messages) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	destFolder, err := a.folderStore.Get(destFolderID)
 	if err != nil || destFolder == nil {
-		return fmt.Errorf("destination folder not found: %s", destFolderID)
+		return nil, fmt.Errorf("destination folder not found: %s", destFolderID)
 	}
 
 	// Cross-account move: APPEND raw bytes to destination first, then route source
@@ -416,7 +439,7 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 	// APPEND fails, source stays untouched.
 	if messages[0].AccountID != destFolder.AccountID {
 		if err := a.copyMessagesAcrossAccounts(messages, destFolder); err != nil {
-			return fmt.Errorf("cross-account move: append failed: %w", err)
+			return nil, fmt.Errorf("cross-account move: append failed: %w", err)
 		}
 		_, trashErr := a.Trash(messageIDs)
 		// Sync destination so appended messages get correct UIDs locally.
@@ -424,7 +447,7 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 			defer recoverPanic("app.actions", "cross-account move dest sync")
 			_ = a.SyncFolder(destFolder.AccountID, destFolder.ID)
 		}()
-		return trashErr
+		return nil, trashErr
 	}
 
 	// Group by source folder
@@ -435,7 +458,7 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 
 	// Update local DB first
 	if err := a.messageStore.MoveMessages(messageIDs, destFolderID); err != nil {
-		return fmt.Errorf("failed to move messages locally: %w", err)
+		return nil, fmt.Errorf("failed to move messages locally: %w", err)
 	}
 
 	wailsRuntime.EventsEmit(a.ctx, "messages:moved", map[string]interface{}{
@@ -500,7 +523,7 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 	go func() {
 		defer recoverPanic("app.actions", "move messages on IMAP")
 		for sourceFolderID, msgs := range byFolder {
-			if err := a.moveMessagesToIMAP(msgs, sourceFolderID, destFolder); err != nil {
+			if err := a.moveMessagesToIMAP(msgs, sourceFolderID, destFolder, pushUndo); err != nil {
 				log.Error().Err(err).
 					Str("sourceFolderID", sourceFolderID).
 					Str("destFolderID", destFolderID).
@@ -542,18 +565,22 @@ func (a *App) MoveToFolder(messageIDs []string, destFolderID string) error {
 			continue
 		}
 
-		cmd := undo.NewMoveCommand(
+		cmds = append(cmds, undo.NewMoveCommand(
 			a,
 			msgs[0].AccountID,
 			rfc822IDs,
 			sourceFolderID,
 			destFolderID,
 			fmt.Sprintf("Move to %s", destFolder.Name),
-		)
-		a.undoStack.Push(cmd)
+		))
 	}
 
-	return nil
+	if pushUndo {
+		for _, cmd := range cmds {
+			a.undoStack.Push(cmd)
+		}
+	}
+	return cmds, nil
 }
 
 // isGmailAccount checks if the account uses Gmail's IMAP server.
@@ -568,7 +595,7 @@ func (a *App) isGmailAccount(accountID string) bool {
 	return acc.IMAPHost == "imap.gmail.com"
 }
 
-func (a *App) moveMessagesToIMAP(messages []*message.Message, sourceFolderID string, destFolder *folder.Folder) error {
+func (a *App) moveMessagesToIMAP(messages []*message.Message, sourceFolderID string, destFolder *folder.Folder, pushUndo bool) error {
 	log := logging.WithComponent("app.moveMessagesToIMAP")
 
 	if len(messages) == 0 {
@@ -1402,18 +1429,31 @@ func (a *App) markAsNotSpamCrossAccount(messageIDs []string) error {
 //
 // Each partition's outcome is independent — a Gmail partition's failure
 // doesn't block an IMAP partition's success.
-func (a *App) moveToFolderCrossAccount(messageIDs []string, destFolderID string) error {
+func (a *App) moveToFolderCrossAccount(messageIDs []string, destFolderID string, pushUndo bool) ([]*undo.MoveCommand, error) {
 	byAccount, err := a.partitionByAccount(messageIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var firstErr error
+	var cmds []*undo.MoveCommand
+	// pushUndo is false for every partition: one cross-account move is a single
+	// user action, so it becomes ONE undo entry below. Pushing per partition
+	// made one Undo() revert only the first account.
 	for _, ids := range byAccount {
-		if err := a.MoveToFolder(ids, destFolderID); err != nil && firstErr == nil {
+		partCmds, err := a.moveToFolderCollect(ids, destFolderID, false)
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
+		cmds = append(cmds, partCmds...)
 	}
-	return firstErr
+	if pushUndo && len(cmds) > 0 {
+		values := make([]undo.MoveCommand, 0, len(cmds))
+		for _, c := range cmds {
+			values = append(values, *c)
+		}
+		a.undoStack.Push(undo.NewMultiMoveCommand(values, fmt.Sprintf("Move to %s", destFolderID)))
+	}
+	return cmds, firstErr
 }
 
 // copyToFolderCrossAccount fan-outs CopyToFolder() per source-account

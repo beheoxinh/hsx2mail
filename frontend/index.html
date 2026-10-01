@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Email Hub</title>
+    <!-- Application icon. Generated from brand/icon.svg by
+         build/icons/generate-icons.sh. The webview is what actually draws the
+         window, so without this the window falls back to a generic page icon. -->
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon-256.png" />
+    <link rel="mask-icon" href="/icon.svg" color="#00a9bc" />
     <style>
       /* Prevent FOUC - match theme background colors */
       html, body {
@@ -69,6 +76,24 @@
     </style>
   </head>
   <body>
+    <script>
+      // Prevent theme flash - apply theme before app loads
+      (function() {
+        try {
+          var theme = localStorage.getItem('hsx2mail-theme')
+          if (theme === 'dark') {
+            document.documentElement.classList.add('dark')
+          } else if (theme === 'light') {
+            document.documentElement.classList.remove('dark')
+          } else {
+            // Default to system preference
+            if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+              document.documentElement.classList.add('dark')
+            }
+          }
+        } catch (e) {}
+      })()
+    </script>
     <!--
       Boot splash sits above #app, visible until removed by App.svelte after
       initialization. Plain HTML (no Svelte) so it renders the instant the

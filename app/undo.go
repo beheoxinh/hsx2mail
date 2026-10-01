@@ -15,14 +15,20 @@ import (
 // Undo reverses the most recent undoable action
 // Returns the description of what was undone, or error if nothing to undo
 func (a *App) Undo() (string, error) {
-	cmd := a.undoStack.Pop()
+	// Peek, don't Pop: Pop removes the command before it has actually been
+	// undone, so any transient failure (IMAP error, DB lock) destroyed the
+	// user's only chance to retry. The command is dropped from the stack only
+	// after its Undo() succeeds.
+	cmd := a.undoStack.Peek()
 	if cmd == nil {
 		return "", fmt.Errorf("nothing to undo")
 	}
 
-	if err := cmd.Undo(); err != nil {
+	err := cmd.Undo()
+	if err != nil {
 		return "", fmt.Errorf("undo failed: %w", err)
 	}
+	a.undoStack.Discard(cmd)
 
 	// Emit event to refresh UI
 	wailsRuntime.EventsEmit(a.ctx, "undo:completed", cmd.Description())
@@ -165,5 +171,7 @@ func (a *App) FindLocalMessageIDs(accountID, folderID string, rfc822MessageIDs [
 // MoveMessagesToFolder implements undo.UndoContext
 // Delegates to the standard MoveToFolder pipeline (IMAP + local DB + events)
 func (a *App) MoveMessagesToFolder(messageIDs []string, destFolderID string) error {
-	return a.MoveToFolder(messageIDs, destFolderID)
+	// pushUndo=false: this is the undo path re-entering the move pipeline.
+	// Pushing here would record the inverse move and turn Undo into a toggle.
+	return a.moveToFolder(messageIDs, destFolderID, false)
 }

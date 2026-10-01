@@ -107,7 +107,10 @@ export const providers: EmailProvider[] = [
   {
     id: 'fastmail',
     name: 'Fastmail',
-    icon: 'simple-icons:fastmail',
+    // simple-icons has no Fastmail glyph; an unregistered name renders blank
+    // offline (Iconify falls back to the network). mdi:email-fast is present in
+    // the bundled collection.
+    icon: 'mdi:email-fast',
     iconSrc: fastmailIcon,
     domains: ['fastmail.com', 'fastmail.fm', 'messagingengine.com'],
     imap: { host: 'imap.fastmail.com', port: 993, security: 'tls' },

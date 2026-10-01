@@ -280,4 +280,3 @@ func writeFilteredHeaders(buf *bytes.Buffer, headers []byte) {
 	// Always add MIME-Version for signed messages
 	buf.WriteString("MIME-Version: 1.0\r\n")
 }
-

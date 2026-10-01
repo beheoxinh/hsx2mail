@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/beheoxinh/hsx2mail/internal/message"
 	gomessage "github.com/emersion/go-message"
 	msgcharset "github.com/emersion/go-message/charset"
-	"github.com/beheoxinh/hsx2mail/internal/message"
 	"golang.org/x/text/encoding/htmlindex"
 )
 

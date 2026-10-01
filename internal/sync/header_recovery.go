@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/beheoxinh/hsx2mail/internal/message"
 )
 
 // recoverFailedHeaderBatch re-fetches the given UIDs without requesting ENVELOPE so the

@@ -422,7 +422,9 @@ func (a *App) decryptMessageBody(msg *message.Message) ([]byte, error) {
 		// Unwrap signature if present
 		ct := extractContentType(innerBytes)
 		if smime.IsSMIMESigned(ct) {
-			_, unwrapped := a.smimeVerifier.VerifyAndUnwrap(innerBytes)
+			// Only the unwrapped body matters here; bind to the From so any
+			// status this path inspects is still identity-checked.
+			_, unwrapped := a.smimeVerifier.VerifyAndUnwrap(innerBytes, senderFromRaw(innerBytes))
 			if unwrapped != nil {
 				innerBytes = unwrapped
 			}
@@ -453,7 +455,10 @@ func (a *App) decryptMessageBody(msg *message.Message) ([]byte, error) {
 		// Unwrap signature if present
 		ct := extractContentType(innerBytes)
 		if pgp.IsPGPSigned(ct) {
-			_, unwrapped := a.pgpVerifier.VerifyAndUnwrap(innerBytes)
+			// Only the unwrapped body matters here; the caller supplies the
+			// sender separately. Pass the From so any status this path does look
+			// at is still bound to the right identity.
+			_, unwrapped := a.pgpVerifier.VerifyAndUnwrap(innerBytes, senderFromRaw(innerBytes))
 			if unwrapped != nil {
 				innerBytes = unwrapped
 			}

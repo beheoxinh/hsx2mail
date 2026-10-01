@@ -24,22 +24,12 @@ export function getFocusedPane(): FocusablePane {
 /**
  * Check if a specific pane is focused
  */
-export function isPaneFocused(pane: FocusablePane): boolean {
-  return focusedPane === pane
-}
 
 /**
  * Check if a specific pane is currently flashing
  */
 export function isPaneFlashing(pane: FocusablePane): boolean {
   return flashingPane === pane
-}
-
-/**
- * Get the currently flashing pane (for reactive binding)
- */
-export function getFlashingPane(): FocusablePane | null {
-  return flashingPane
 }
 
 /**
@@ -115,23 +105,6 @@ export function isInputElement(target: EventTarget | null): boolean {
   }
 
   return false
-}
-
-/**
- * Create a reactive object for use in components
- * This allows components to reactively respond to focus changes
- */
-export function createKeyboardState() {
-  return {
-    get focusedPane() { return focusedPane },
-    get flashingPane() { return flashingPane },
-    isPaneFocused,
-    isPaneFlashing,
-    setFocusedPane,
-    focusPreviousPane,
-    focusNextPane,
-    isInputElement,
-  }
 }
 
 /**

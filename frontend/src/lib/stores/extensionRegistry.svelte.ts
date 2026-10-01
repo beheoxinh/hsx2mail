@@ -23,10 +23,6 @@ let railTabs = $state<v1.RailTabRequest[]>([])
 // and renders the matching extension's dialog component.
 let openSettingsExtension = $state<string | null>(null)
 
-export function getEnabledExtensions(): string[] {
-  return enabledExtensions
-}
-
 export function getRailTabs(): v1.RailTabRequest[] {
   return railTabs
 }
@@ -36,10 +32,6 @@ export function getRailTabs(): v1.RailTabRequest[] {
 // extension = two rail items: Mail + that extension.)
 export function isRailVisible(): boolean {
   return enabledExtensions.length >= 1
-}
-
-export function isExtensionEnabled(name: string): boolean {
-  return enabledExtensions.includes(name)
 }
 
 export async function refreshExtensionRegistry(): Promise<void> {

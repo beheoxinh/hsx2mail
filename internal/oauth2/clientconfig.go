@@ -78,9 +78,9 @@ func RegisterCredentialsProvider(p CredentialsProvider) {
 //
 //  1. ActiveChoiceLookup — the user's explicit picker selection. When
 //     present, routes:
-//       - "custom"          → UserOverrideLookup only
-//       - "hsx2mail-mail"     → SlotAliasLookup only (recursive)
-//       - "hsx2mail-shipped"  → straight to provider chain
+//     - "custom"          → UserOverrideLookup only
+//     - "hsx2mail-mail"     → SlotAliasLookup only (recursive)
+//     - "hsx2mail-shipped"  → straight to provider chain
 //     If the routed source returns nothing (e.g., choice="custom" but no
 //     creds saved yet), falls through to the provider chain so OAuth
 //     doesn't error out — the UI still shows "Custom" so the user knows
@@ -88,7 +88,7 @@ func RegisterCredentialsProvider(p CredentialsProvider) {
 //
 //  2. (No active choice recorded) → backward-compat inference using row
 //     presence, preserving pre-marker behavior for upgraded installs:
-//       UserOverrideLookup → SlotAliasLookup → providers.
+//     UserOverrideLookup → SlotAliasLookup → providers.
 //     First time the user touches the picker post-upgrade, an explicit
 //     choice is recorded and the resolver stops using this branch for
 //     that slot.

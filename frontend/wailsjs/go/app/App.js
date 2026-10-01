@@ -962,6 +962,10 @@ export function ReadFileAsAttachment(arg1) {
   return window['go']['app']['App']['ReadFileAsAttachment'](arg1);
 }
 
+export function ReadFileAsInlineImage(arg1) {
+  return window['go']['app']['App']['ReadFileAsInlineImage'](arg1);
+}
+
 export function ReauthorizeAccount(arg1) {
   return window['go']['app']['App']['ReauthorizeAccount'](arg1);
 }
@@ -1194,6 +1198,10 @@ export function SetStartHidden(arg1) {
   return window['go']['app']['App']['SetStartHidden'](arg1);
 }
 
+export function SetStartHiddenOverride(arg1) {
+  return window['go']['app']['App']['SetStartHiddenOverride'](arg1);
+}
+
 export function SetTermsAccepted(arg1) {
   return window['go']['app']['App']['SetTermsAccepted'](arg1);
 }
@@ -1204,6 +1212,10 @@ export function SetThemeMode(arg1) {
 
 export function ShowWindow() {
   return window['go']['app']['App']['ShowWindow']();
+}
+
+export function StageAttachment(arg1, arg2, arg3) {
+  return window['go']['app']['App']['StageAttachment'](arg1, arg2, arg3);
 }
 
 export function Star(arg1) {

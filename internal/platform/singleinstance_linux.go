@@ -15,6 +15,13 @@ import (
 
 // linuxSingleInstanceLock uses a Unix socket for single-instance detection.
 // The socket lives alongside the IPC socket at /tmp/hsx2mail-{uid}/instance.sock.
+// staleConfirmAttempts / staleConfirmDelay bound the retry loop used to tell a
+// live-but-busy instance apart from an abandoned socket before unlinking it.
+const (
+	staleConfirmAttempts = 3
+	staleConfirmDelay    = 300 * time.Millisecond
+)
+
 type linuxSingleInstanceLock struct {
 	listener   net.Listener
 	socketPath string
@@ -51,8 +58,29 @@ func (l *linuxSingleInstanceLock) TryLock(activateMsg string) (bool, error) {
 		return true, nil
 	}
 
-	// Listen failed — try to activate the existing instance
-	conn, dialErr := net.DialTimeout("unix", socketPath, 2*time.Second)
+	// Listen failed — try to activate the existing instance.
+	//
+	// A single Dial is not proof that the socket is stale: the holder may be
+	// mid-startup (bound but not yet accepting) or briefly saturated with its
+	// accept backlog full. Treating that as "stale" and unlinking the socket
+	// would let a second instance take over while the first is still running,
+	// giving two processes writing the same SQLite database. Retry a few times
+	// before concluding the socket is abandoned.
+	var conn net.Conn
+	var dialErr error
+	for attempt := 0; attempt < staleConfirmAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(staleConfirmDelay):
+			case <-l.done:
+				return false, nil
+			}
+		}
+		conn, dialErr = net.DialTimeout("unix", socketPath, 2*time.Second)
+		if dialErr == nil {
+			break
+		}
+	}
 	if dialErr == nil {
 		// Existing instance is alive — send activation command
 		_, _ = conn.Write([]byte(activateMsg + "\n"))

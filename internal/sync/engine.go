@@ -6,7 +6,6 @@ import (
 	"io"
 	gosync "sync"
 
-	gomessage "github.com/emersion/go-message"
 	"github.com/beheoxinh/hsx2mail/internal/account"
 	"github.com/beheoxinh/hsx2mail/internal/email"
 	"github.com/beheoxinh/hsx2mail/internal/folder"
@@ -15,6 +14,7 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
+	gomessage "github.com/emersion/go-message"
 	"github.com/rs/zerolog"
 )
 
@@ -54,11 +54,11 @@ type ParsedBody struct {
 	HasAttachments bool
 	Attachments    []*message.Attachment  // Extracted attachment metadata (content only for inline)
 	SMIMEResult    *smime.SignatureResult // S/MIME verification result (nil if not S/MIME)
-	SMIMERawBody   []byte                // Raw S/MIME body for on-view processing
-	SMIMEEncrypted bool                  // Whether the message is encrypted
-	PGPRawBody     []byte                // Raw PGP body for on-view processing
-	PGPEncrypted   bool                  // Whether the message is PGP encrypted
-	UnsafeContent  bool                  // True if message has non-compliant encoding
+	SMIMERawBody   []byte                 // Raw S/MIME body for on-view processing
+	SMIMEEncrypted bool                   // Whether the message is encrypted
+	PGPRawBody     []byte                 // Raw PGP body for on-view processing
+	PGPEncrypted   bool                   // Whether the message is PGP encrypted
+	UnsafeContent  bool                   // True if message has non-compliant encoding
 }
 
 // Retry limits for error recovery
@@ -102,11 +102,11 @@ type Engine struct {
 // NewEngine creates a new sync engine
 func NewEngine(pool *imapPkg.Pool, accountStore *account.Store, folderStore *folder.Store, messageStore *message.Store, attachmentStore *message.AttachmentStore) *Engine {
 	return &Engine{
-		pool:            pool,
-		accountStore:    accountStore,
-		folderStore:     folderStore,
-		messageStore:    messageStore,
-		attachmentStore: attachmentStore,
+		pool:             pool,
+		accountStore:     accountStore,
+		folderStore:      folderStore,
+		messageStore:     messageStore,
+		attachmentStore:  attachmentStore,
 		attachExtractor:  email.NewAttachmentExtractor(),
 		sanitizer:        email.NewSanitizer(),
 		log:              logging.WithComponent("sync"),

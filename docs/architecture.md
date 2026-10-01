@@ -1,677 +1,600 @@
-# Kiến trúc Hệ thống Email Hub — Phân tích Kiến trúc
+# Hsx2Mail — Architecture
 
-## Tổng quan
+Canonical architectural reference for the Hsx2Mail desktop email client, describing the
+v0.3.2 tree. Every structural claim below is grounded in the source with a `path:line`
+citation. Where the older pre-rewrite version of this file (and `AGENTS.md`) disagreed with
+the code, the code wins: the corrections are recorded in
+`docs/analysis/90-verification.md` and `docs/analysis/95-existing-docs-audit.md`, and the
+remaining open gaps are tracked in `docs/PLAN.md` and `docs/GAPS.md`.
 
-Email Hub là email client hiện đại, đa nền tảng được xây dựng trên **Wails v2** (Go 1.25 backend + Svelte 5/TypeScript frontend). Phiên bản hiện tại: v0.3.2. Tác giả: beheoxinh.
+## Where each topic lives
 
-**Đặc điểm kiến trúc nổi bật:**
-- Desktop app native (KHÔNG phải Electron) — dùng Wails + WebView2GTK/Cocoa/WebView2
-- Pure Go SQLite (modernc.org/sqlite) — KHÔNG dùng CGO, dễ cross-compile
-- Mô hình đa tiến trình (multi-process) với composer window tách rời
-- Hệ thống extension nhúng (embedded), không dynamic loading
-- TOFU (Trust On First Use) cho TLS certificate
+This file owns **structure**: how the pieces fit together, in what order, and which layer
+owns what. It does *not* re-document topics that have their own canonical owner. If you
+need depth on one of these, go to that file — do not read a summary here and trust it.
 
----
+| Topic | Canonical owner | This file |
+|---|---|---|
+| Repository layout, module graph, startup order, data flow | **this file** | full detail |
+| Schema, migrations v1..v42, tables, indexes, PRAGMAs, retention | `DATABASE.md` | §5 summary only |
+| Build, test, release, troubleshooting | `OPERATIONS.md` | §12 summary only |
+| Backup, restore, forward-only migrations, v40–v42 rollback | `SQL_ROLLBACK.md` | — |
+| Startup, close semantics, autostart, tray, sleep/wake, network, scheduling | `BACKGROUND.md` | §11 summary only |
+| Store graph, component tree, virtualized list, events, layout | `FRONTEND.md` | §10 summary only |
+| PGP, S/MIME, TOFU, keyring, HTML sanitizing | `CRYPTO.md` | §9 summary only |
+| Size limits, timeouts, batch sizes, cache budgets, index rationale | `PERFORMANCE.md` | — |
+| Extension API surface and lifecycle | `EXTENSIONS.md`, `EXT_RULES.md` | §8 summary only |
+| Document index and maintenance rules | `README.md` | — |
 
-## 1. Mô hình Multi-Process
-
-Email Hub chạy với **hai loại tiến trình**:
-
-### Main Process (App struct)
-- Khởi tạo từ `main.go` với `--compose=false` (mặc định)
-- Sở hữu toàn bộ stores, sync engine, IDLE manager, OAuth2 manager, extensions
-- Mở một cửa sổ Wails duy nhất chứa toàn bộ UI email client
-- Chạy IPC server (Unix socket) để giao tiếp với composer window
-
-### Composer Process (ComposerApp struct)
-- Khởi tạo từ `main.go` với `--compose=true`
-- Là tiến trình con được spawn từ main process qua `exec.Command()`
-- Sở hữu DB connection riêng, IMAP pool riêng
-- Kết nối tới main process qua IPC (Unix socket + token auth)
-- Khi send/save draft → gửi IPC message → main process sync IMAP
-
-### Single-Instance Lock
-- Dùng `platform.SingleInstanceLock` (Unix socket hoặc D-Bus trên Linux)
-- Khi user mở instance thứ hai: kích hoạt instance cũ (ShowWindow) + thoát
-- Nếu kèm `mailto:` argument: forward cho instance cũ xử lý
+- **Product name:** Hsx2Mail. The runtime window title is still the legacy `Email Hub`
+  (`main.go:139`).
+- **Version:** 0.3.2 (`app/state.go:30`, `frontend/package.json:4`).
+- **License / author:** see `PRIVACY.md`, `TERMS.md`, `brand/`; author beheoxinh.
 
 ---
 
-## 2. Startup Sequence (Chi tiết)
+## 1. Purpose, scope, and tech stack
 
-### Phase 0: CLI Parsing
-```
-main.go → flag.Parse()
-  --debug       : Enable debug logging (hoặc env HSX2MAIL_DEBUG=1)
-  --compose     : Chạy ở chế độ composer window
-  --account     : Account ID (cho composer)
-  --ipc-address : IPC server address (cho composer)
-  --mode        : new/reply/reply-all/forward
-  --message-id  : Message gốc (cho reply/forward)
-  --draft-id    : Draft để resume
-  --mailto      : mailto: URL
-  --version     : In version
-  Positional args: mailto: URL
-```
+Hsx2Mail is a native, cross-platform desktop email client. It is not Electron: the UI is a
+Svelte 5 single-page app hosted in an OS WebView that Wails v2 drives from a Go process.
+All mail, contact, calendar, crypto and persistence logic lives in Go; the frontend talks to
+it through Wails bindings and Wails events.
 
-### Phase 1: Preflight (TRƯỚC khi tạo Wails window)
-```
-App.Preflight()
-  ├── logging.Init()            — zerolog, debug/fatal level
-  ├── platform.GetPaths()       — XDG paths
-  │     ~/.local/share/hsx2mail/   (data)
-  │     ~/.config/hsx2mail/       (config)
-  │     ~/.cache/hsx2mail/        (cache)
-  ├── paths.EnsureDirectories() — mkdir -p 0700
-  ├── database.Open()           — SQLite WAL mode (modernc.org/sqlite)
-  │     PRAGMA: busy_timeout(30000), journal_mode=WAL, synchronous=NORMAL
-  │     File permissions: 0600 (owner read/write only)
-  ├── db.Migrate()              — v1..v39, ErrSchemaTooNew guard
-  └── credentials.NewStore()    — Keyring + AES-GCM fallback
-      └── OAuth wiring: UserOverrideLookup, SlotAliasLookup, ActiveChoiceLookup
-```
+| Layer | Technology | Evidence |
+|---|---|---|
+| Host shell | Wails v2.12 | `go.mod`, `wails.json` |
+| Backend language | Go 1.25 | `go.mod:3` |
+| Storage | SQLite via `modernc.org/sqlite` (pure Go, no CGO) | `internal/database/database.go` |
+| Mail | `go-imap v2` beta (IMAP/IDLE/CONDSTORE), custom SMTP | `internal/imap/`, `internal/smtp/` |
+| Frontend | Svelte 5 (runes), TypeScript, Vite 6 | `frontend/package.json`, `frontend/vite.config.ts` |
+| CSS / UI | Tailwind 3, `bits-ui`, Iconify | `frontend/` |
+| Rich-text editor | Tiptap v2 (ProseMirror) | `frontend/src/lib/components/composer/` |
+| i18n | `svelte-i18n` (10 locales) | `frontend/src/lib/i18n/` |
+| Crypto | PGP (`ProtonMail/go-crypto`), S/MIME PKCS#7, TLS TOFU | `internal/pgp/`, `internal/smime/`, `internal/certificate/` |
+| Key storage | OS keyring (`github.com/zalando/go-keyring`) + AES-GCM DB fallback | `internal/keyring/keyring.go:7`, `internal/credentials/store.go` |
+| Packaging | Flatpak (primary), native Linux, macOS `.app`, Windows NSIS | `Makefile`, `build/` |
 
-### Phase 2: Wails Startup (SAU khi tạo window)
-```
-App.Startup(ctx)
-  ├── Single-instance onShow callback (mailto forwarding)
-  ├── Construct ALL stores:
-  │     account.Store, folder.Store, message.Store, attachment.Store
-  │     contact.Store + draft.Store + settings.Store + appState.Store
-  │     imageAllowlist.Store + certificate.Store + carddav.Store
-  ├── Scale DB pool: BaseIdleConns + (numAccounts * 1), cap at MaxIdleConns (6)
-  ├── Initialize crypto:
-  │     S/MIME: Store, Signer, Verifier, Encryptor, Decryptor
-  │     PGP: Store, Signer, Verifier, Encryptor, Decryptor
-  ├── Initialize IMAP Pool + Sync Engine
-  ├── Wire S/MIME + PGP verifiers into Sync Engine (signature verification)
-  ├── Initialize CardDAV Syncer + Scheduler
-  ├── OAuth2 Manager + Auth Broker (for extensions)
-  ├── Extension system:
-  │     davTransport (TOFU-aware) → davutil.SetDefaultBaseTransport
-  │     authBroker, mailAPI, composerAPI, uiRegistry
-  │     Construct CalendarBridge + ContactsBridge
-  │     For each extension: newCoreForExtension → ext.Register(core)
-  │       → Register UI rail tabs, hooks
-  ├── Google Contacts client
-  ├── IPC server (Unix socket + token auth)
-  ├── Network monitor (D-Bus on Linux, event-driven, zero-polling)
-  ├── Background sync:
-  │     sync.Scheduler (polling period per account: 30-60 min)
-  │     imap.IdleManager (push, per-account TCP connection)
-  │     processIdleEvents goroutine
-  ├── Sync pending drafts from last session
-  ├── FTS Indexer + background indexing (5s delay từ initial sync)
-  ├── EMIT "app:ready" → frontend mounts App.svelte
-  ├── Desktop notifications (OS-native per platform)
-  ├── Sleep/wake monitor (D-Bus on Linux)
-  ├── Theme monitor (XDG Settings Portal on Linux)
-  └── Autostart manager
-```
+### Repository layout
 
-### Phase 3: Frontend Bootstrap (song song với Phase 2)
 ```
-main.ts → bootstrap()
-  ├── waitForRuntime()         — Poll window.runtime (2s timeout)
-  ├── WindowShow()             — Show OS window sau khi runtime inject
-  ├── initI18n()               — Load locale JSON
-  ├── waitForBackendReady()    — EventsOn("app:ready") + IsReady() fallback
-  └── mount(App.svelte)        — Mount Svelte app
+main.go, preflight.go       Entry point, CLI flags, single-instance, preflight before Wails
+app/                        Wails-bound application layer (thin; no app/ -> app/ imports)
+internal/                   Core business logic, no Wails imports
+  account/ folder/ message/ draft/ database/ credentials/ oauth2/ settings/ appstate/
+  imap/ smtp/ sync/ email/ pgp/ smime/ crypto/ carddav/ contact/ certificate/
+  ipc/ platform/ notification/ keyring/ logging/ undo/ extensions/ core/api/v1/
+extensions/calendar/        First-party Calendar extension (backend + frontend + manifest)
+extensions/contacts/        First-party Contacts extension (backend + frontend + manifest)
+frontend/                   Svelte 5 UI: src/lib/stores, src/lib/components, wailsjs/ bindings
+cmd/hsx2mail-creds/         OAuth credential helper binary (sibling exec)
+build/                      Flatpak, Linux, macOS, Windows packaging scripts and manifests
+tools/db/                   Database rollback SQL
+brand/                      Application icons
+archive/                    Discontinued approaches (AppImage, old backups)
+docs/                       Documentation tree (this file is canonical for architecture)
+docs/analysis/              Adversarial analysis of the v0.3.2 tree (evidence, not canon)
 ```
 
 ---
 
-## 3. Module Dependency Graph & Package Responsibilities
+## 2. High-level system map
 
-### app/ — Wails Binding Layer
+Single main process plus zero-or-more detached-composer child processes.
 
-| File | Binding Prefix | Responsibility |
-|------|---------------|----------------|
-| `app.go` | - | App struct, Preflight, Startup, Shutdown, lifecycle |
-| `account.go` | - | Account CRUD (Add/Update/Remove/Reorder) + Microsoft Shared Mailbox |
-| `message.go` | - | Message/conversation retrieval + on-demand body fetch |
-| `compose.go` | - | Send pipeline (SMTP + MIME build) + OAuth token refresh |
-| `draft.go` | - | Draft save/load + sync to IMAP Drafts folder |
-| `sync.go` | - | SyncFolder with debounce/cancel/restart + SyncAllComplete |
-| `folder.go` | - | Folder tree + special folder detection (Inbox/Sent/Drafts/Trash/Spam/Archive) |
-| `background.go` | - | Sync scheduler + IDLE manager + notifications + sleep/wake/network events |
-| `oauth.go` | - | OAuth flow (StartOAuthFlow, CompleteOAuthAccountSetup, StartCustomOAuthFlow) |
-| `pgp.go` | PGP_* | PGP key management bindings (import/list/delete/sign/verify) |
-| `smime.go` | SMIME_* | S/MIME certificate management bindings |
-| `contact.go` | Contacts_*, Contact_* | Contact search (vCard + CardDAV + Google) |
-| `carddav.go` | - | CardDAV source CRUD + account linking + sync |
-| `search.go` | - | Full-text search |
-| `settings.go` | - | Settings CRUD |
-| `theme.go` | - | Theme switching (dark/light/system) |
-| `undo.go` | - | Undo stack (move/delete/flag operations) |
-| `attachment.go` | - | Attachment management + download + inline images |
-| `certificate.go` | - | Certificate trust dialog trigger |
-| `window.go` | - | Window visibility + compositor ready notification |
-| `actions.go` | - | Bulk operations (mark read, star, archive, trash) |
-| `state.go` | - | Application state persistence |
-| `ipc.go` | - | IPC server + OpenComposerWindow (spawn child process) |
-| `eventbus.go` | - | coreapi.EventBus (Go subscribers + frontend EventsEmit fan-out) |
-| `coreimpl.go` | - | coreapi.Core cho extensions (Auth/Mail/UI/Storage/Events/Log/HTML/Contacts) |
-| `detached_composer.go` | - | ComposerApp struct + lifecycle (startup/shutdown cho composer window) |
-| `recover.go` | - | recoverPanic() — goroutine panic recovery |
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ main.go  ──flag parse──▶ single-instance lock ──▶ Preflight ──▶ wails.Run   │
+│                                                     │                       │
+│                                              paths, SQLite,                  │
+│                                              migrations v1..v42,             │
+│                                              credential store                │
+└───────────────────────────────────────────────┬────────────────────────────┘
+                                                 ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ app.App (Wails-bound)                     app/app.go                        │
+│                                                                            │
+│  Stores                          Crypto                     Extensions      │
+│  ├─ account / folder / message   ├─ smime.Store/Signer      ├─ contacts ext │
+│  ├─ draft / settings / appstate  ├─ pgp.Store/Signer        │   Bridge      │
+│  ├─ image allowlist              └─ certificate TOFU store  └─ calendar ext │
+│  └─ contact / carddav                                         Bridge       │
+│                                                                            │
+│  Sync engine            ┌──────────────────────────────┐                   │
+│  ├─ IMAP pool (3/acct)  │  IMAP IDLE (push, INBOX)     │                   │
+│  ├─ scheduler (poll)    │  sync.Scheduler (poll tick)  │                   │
+│  ├─ two-phase sync      └──────────────────────────────┘                   │
+│  └─ FTS indexer                                                            │
+│                                                                            │
+│  IPC server (unix socket)  ◀── newline-delimited JSON ──┐                  │
+│  OAuth2 manager                                          │                  │
+│  Network / sleep-wake / theme monitors (D-Bus on Linux)  │                  │
+└──────────────────────────────────────────────────────────┼─────────────────┘
+                                                           │
+                          spawn via exec.Command(self)      │ token on stdin
+                                                           ▼
+                          ┌──────────────────────────────────────────────┐
+                          │ ComposerApp (hsx2mail --compose …)           │
+                          │  own DB handle + own IMAP pool               │
+                          │  draft save/send -> IPC -> main syncs        │
+                          └──────────────────────────────────────────────┘
+```
 
-### internal/ — Core Business Logic
-
-| Package | Responsibility | Key Types |
-|---------|---------------|-----------|
-| `account/` | Account model + Store (CRUD) | Account, AccountConfig, Store |
-| `folder/` | Folder model + Store (CRUD, tree ops) | Folder, FolderTree, Store |
-| `message/` | Message model + Store (CRUD, FTS, threading) | Message, MessageHeader, Conversation, Store, FTSIndexer |
-| `draft/` | Draft model + Store | Draft, Store |
-| `email/` | Attachment extraction, HTML sanitizer, download | AttachmentExtractor, Sanitizer |
-| `imap/` | IMAP client (go-imap v2 wrapper) | Client, Pool, IdleManager, XOAUTH2 |
-| `smtp/` | SMTP client + message builder + MDN | Client, AuthType, SecurityType |
-| `sync/` | Sync engine + scheduler + threading + CONDSTORE + search | Engine, Scheduler, threader |
-| `database/` | SQLite wrapper + migrations (v1-v39) | DB, Migration, ErrSchemaTooNew |
-| `credentials/` | Keyring-backed credential store | Store, OAuthTokens, credential stores |
-| `oauth2/` | OAuth2 flow + providers + server | Manager, ProviderConfig, TokenResponse |
-| `settings/` | Settings key-value store + image allowlist | Store, ImageAllowlistStore |
-| `appstate/` | UI state persistence | Store |
-| `certificate/` | TOFU certificate store + verifier | Store, Verifier, Error, Info |
-| `pgp/` | PGP key store + sign/verify + encrypt/decrypt + HKP + WKD | Store, Signer, Verifier, Encryptor, Decryptor |
-| `smime/` | S/MIME store + sign/verify + encrypt/decrypt + PKCS12 | Store, Signer, Verifier, Encryptor, Decryptor |
-| `crypto/` | Shared crypto utilities | |
-| `carddav/` | CardDAV client + model + syncer | Client, Store, Syncer |
-| `contact/` | Contact model + Google + Microsoft + vCard | Store, GoogleContactsClient |
-| `notification/` | OS notifications (darwin/linux/windows) | Notifier, Notification, NotificationData |
-| `ipc/` | IPC client/server (token-based auth) | Server, Client, Message, TokenManager |
-| `keyring/` | OS keyring abstraction | |
-| `logging/` | zerolog wrapper | Config, WithComponent |
-| `undo/` | Undo stack + commands | Stack, Command (MoveCommand, DeleteSentCommand, FlagCommand) |
-| `platform/` | OS abstractions | Paths, NetworkMonitor, SleepWakeMonitor, ThemeMonitor, SingleInstanceLock |
-| `extensions/` | Extension API implementations | auth.Broker, mail.API, compose.API, ui.Registry |
-| `core/api/v1/` | Extension API surface types | Core, Mail, Auth, UI, Storage, EventBus, Logger, HTML |
-
-### extensions/ — First-Party Extensions
-
-| Extension | Backend Path | Frontend Path | Storage |
-|-----------|-------------|---------------|---------|
-| Calendar | `extensions/calendar/backend/` | `extensions/calendar/frontend/` | Per-extension SQLite |
-| Contacts | `extensions/contacts/backend/` | `extensions/contacts/frontend/` | Tables in main DB |
+The frontend sandbox (WebView) holds only the Svelte app; it reaches Go through generated
+Wails bindings (`frontend/wailsjs/`) and receives state through Wails events (`app:ready`,
+`folder:synced`, `messages:updated`, `fts:progress`, `theme:system-pref`, `contacts:changed`).
 
 ---
 
-## 4. Database Migrations (v1 → v39)
+## 3. Startup sequence (real ordering)
 
-### Migration History
+### 3.1 CLI and process mode (`main.go`)
 
-| Version | Changes |
-|---------|---------|
-| v1 | Initial: accounts, identities, folders |
-| v2 | Messages table |
-| v3 | Attachments table |
-| v4 | Contacts table |
-| v5 | Settings table |
-| v6 | app_state table |
-| v7 | image_allowlist table |
-| v8 | Certificates table (TOFU) |
-| v9-v14 | Incremental schema refinements |
-| v15 | contact_sources table |
-| v16-v17 | Schema refinements |
-| v18 | contact_records (unified contact schema) |
-| v19 | Schema refinements |
-| v20 | undo_commands table |
-| v21-v39 | Incremental improvements, index optimizations |
-
-### Schema Guard
-
-```go
-type ErrSchemaTooNew struct {
-    DBVersion    int
-    BuildVersion int
-}
+```
+main.go:45  flag.Parse()
+main.go:49  --version short-circuit
+main.go:55  --debug  -> platform.AttachConsole() on Windows
+main.go:59  positional mailto: URL parsed into app.MailtoData
+main.go:71  --compose  -> runComposerMode() (child process path)
+main.go:75  otherwise    runMainMode()
 ```
 
-Khi DB có schema version > max known version → từ chối mở, hướng dẫn user rollback.
+### 3.2 Single-instance and preflight (main window)
 
-### WAL Management
+```
+main.go:87   lock := platform.NewSingleInstanceLock()
+main.go:88   locked, _ := lock.TryLock(activateMsg)   // "show" or the raw mailto URL
+main.go:92   if !locked { return }                    // second instance exits 0
+main.go:99   settings.ReadNativeTitleBar(...)          // Frameless is init-time only
+main.go:105  application := app.NewApp(DebugMode, *dbusNotify)
+main.go:119  runPreflight(application)  -> app.Preflight (app/app.go:~420)
+               ├─ logging.Init (zerolog; debug vs info)
+               ├─ platform.GetPaths (XDG data/config/cache)
+               ├─ paths.EnsureDirectories (0700)
+               ├─ database.Open (WAL, busy_timeout 30 s, foreign_keys ON, 0600 file)
+               ├─ db.Migrate (v1..v42, ErrSchemaTooNew guard)
+               ├─ credentials.NewStore (keyring probe + AES fallback)
+               └─ OAuth override wiring (UserOverrideLookup, SlotAliasLookup, ActiveChoiceLookup)
+main.go:135  wails.Run(&options.App{ ... })
+               ├─ Title "Email Hub", default size 3/4 x 4/5 of primary screen
+               ├─ StartHidden: true                      main.go:142
+               ├─ Frameless: !nativeTitleBar             main.go:141
+               ├─ OnStartup / OnShutdown / OnBeforeClose
+               ├─ Bind: App + dummy ComposerApp (bindings only)
+               └─ Linux.WebviewGpuPolicyOnDemand, ProgramName io.github.beheoxinh.Hsx2Mail
+```
 
-- Checkpoint interval: 5 phút (tự động)
-- Mode: PASSIVE (không block)
-- Pool: MaxOpenConns=12, MaxIdleConns=6, BaseIdleConns=3
-- File permissions: 0600
-- Directory permissions: 0700
+Preflight runs **before** `wails.Run` on purpose: a failure yields a native error dialog and
+exit without ever flashing a half-rendered window (`app/app.go:~430`).
+
+### 3.3 `Startup(ctx)` — app/app.go:539
+
+```
+512  a.ctx = ctx
+518  SingleInstanceLock.SetOnShow(...)        // registered early, before blocking D-Bus calls
+535  construct stores: account, folder, message, attachment, contact, draft, settings,
+     appstate, image allowlist, carddav, certificate (TOFU)
+545  updateDBConnectionPool()                 // pool scales by account count
+550  vCard scanner (20 min cache) + background scan
+566  S/MIME store/signer/verifier/encryptor/decryptor
+573  PGP store/signer/verifier/encryptor/decryptor
+581  imap.NewPool(DefaultPoolConfig)          // MaxConnections=3 per account
+599  sync.NewEngine
+620  db.StartCheckpointRoutine               // WAL checkpoint every 5 min
+623  CardDAV store + scheduler
+642  cert-aware DAV transport (BuildTLSConfigDynamic), installed globally
+646  extauth.Broker, extmail.API, extcompose.API, extui.Registry
+657  contact/calendar extensions constructed; ext.Register(core) wires UI surfaces
+708  CardDAV scheduler.Start(ctx)
+711  undo stack (50 commands / 30 s, in-memory)
+717  composeOps shared by App and ComposerApp
+737  initIPC -> $TMPDIR/hsx2mail-<uid>/ipc.sock
+742  initNetworkMonitor
+745  initBackgroundSync: scheduler (1 min tick) + IdleManager (per account)
+     sync pending drafts from last session
+     FTS indexer callbacks
+779  wailsRuntime.EventsEmit(ctx, "app:ready")
+810  goroutine: sleep 5 s, then IndexAllFolders (background FTS)
+828  autostart manager
+```
+
+### 3.4 Frontend mount (`frontend/src/main.ts`)
+
+`waitForRuntime` polls `window.runtime`; once present it calls `WindowShow()`, then
+`initI18n()`, then `waitForBackendReady()` which registers `EventsOn('app:ready')` (with a
+one-shot `IsReady()` fallback, `app/app.go:843`), then mounts `App.svelte`.
 
 ---
 
-## 5. Email Sync Architecture (Chi tiết)
-
-### Two-Phase Sync Model
-
-**Phase 1: Header Sync**
-```
-IMAP FETCH 1:* (FLAGS INTERNALDATE RFC822.SIZE
-               BODY.PEEK[HEADER.FIELDS (From To Cc Subject
-               Date Message-ID In-Reply-To References)]
-               CHANGEDSINCE {modseq})
-
-Batch: 50 messages/batch
-Optimization: CONDSTORE (modseq-based fast path)
-Fallback: UID-based sync khi server không hỗ trợ CONDSTORE
-```
-
-**Threading (sau Phase 1)**
-```
-Algorithm: References-based + Subject-based clustering
-Input: In-Reply-To + References headers
-Input: Subject (strip Re:/Fwd: prefixes)
-Output: ThreadID (grouped by conversation)
-```
-
-**Phase 2: Body Sync**
-```
-IMAP FETCH BODY[] for messages with BodyFetched=false
-
-Batch strategy (hybrid byte + count):
-  - max 512KB per batch (memory safety)
-  - max 50 messages per batch
-  - min 1 message per batch (cho oversized emails)
-  - query 200 candidate messages (cho byte-based batching)
-
-Post-fetch processing:
-  - Parse MIME → text body + HTML body
-  - S/MIME verification (nếu có signature)
-  - PGP verification (nếu có signature)
-  - HTML sanitization (bluemonday)
-  - Attachment extraction
-```
-
-### Parallel Sync Model
+## 4. Module dependency graph
 
 ```
-Account 1 ──▶ Sync Folder INBOX ──▶ goroutine
-           ──▶ Sync Folder SENT  ──▶ goroutine (sequential)
-
-Account 2 ──▶ Sync Folder INBOX ──▶ goroutine
-
-Mỗi account+gói folder chạy song song (goroutine riêng)
-Mỗi account: các folder sync tuần tự (một folder một lần)
-Debounce: 500ms giữa các SyncFolder request
-Cancel: context.WithCancel per account+folder pair
+main.go ─────────────▶ app/ ─────────────▶ internal/*  and  extensions/*/backend
+                         │                    │
+                         │                    └──▶ internal/core/api/v1 (surface types)
+                         │
+                         └──▶ extensions/* ──▶ internal/extensions, internal/core/api/v1
 ```
 
-### Push vs Poll
+Rules enforced by convention and review:
 
-**IDLE Push (real-time)**
-```
-Per-account TCP connection → IDLE command
-On EXISTS response → SyncFolder(accountId, folderId)
-Reconnect on: network change, sleep/wake, connection drop
-```
+- `app/` is the only Wails-bound layer. It may import `internal/*` and `extensions/*/backend`,
+  but **not** other `app/` packages (`AGENTS.md` §15).
+- `internal/*` contains business logic and **never imports Wails**; extension backends may
+  import `internal/*` and `internal/core/api/v1`.
+- `extensions/*/backend` are compiled into the binary (no dynamic loading).
+- `frontend/wailsjs/` is generated output (`make generate`); do not edit it.
 
-**Polling Scheduler (fallback)**
-```
-Per-account timer (30-60 min, configurable)
-Fallback khi IDLE không available (server không hỗ trợ)
-Skip tick khi offline (network.IsConnected())
-```
+Real `internal/` package list (v0.3.2, 26 entries): `account`, `appstate`, `carddav`, `certificate`,
+`contact`, `core/api/v1`, `credentials`, `crypto`, `database`, `draft`, `email`, `extensions`
+(plus `extensions/auth`, `extensions/compose`, `extensions/mail`, `extensions/ui`), `folder`,
+`imap`, `ipc`, `keyring`, `kit/davutil`, `logging`, `message`, `notification`, `oauth2`,
+`pgp`, `platform`, `settings`, `smime`, `smtp`, `sync`, `tray`, `undo`.
 
-### Size Limits
-
-| Limit | Value | Purpose |
-|-------|-------|---------|
-| Max MIME part | 10MB | Memory safety |
-| Max raw message fetch | 50MB | Memory safety |
-| Max inline image content (DB) | 5MB | DB size control |
-| Body fetch batch | 512KB / 50 msgs | Memory + throughput balance |
-| Header batch | 50 msgs | Progressive loading |
-
-### Error Recovery
-
-```
-maxMessageRetries    = 3  // Retries per message
-maxConnectionRetries = 3  // Connection recovery attempts
-Retry delay: exponential backoff (internal to go-imap)
-```
-
-### Periodic Full Flag Sweep
-
-- Cho large mailboxes trên CONDSTORE fast-path
-- Driver: `flagSweepCounter` — per-folder counter
-- Chạy trong `runFlagSync()` / `condstore.go`
-- Đảm bảo flag changes từ clients khác được đồng bộ
+`app/` files: `app.go`, `account.go`, `message.go`, `compose.go`, `draft.go`, `sync.go`,
+`background.go`, `folder.go`, `oauth.go`, `oauth_creds.go`, `pgp.go`, `smime.go`,
+`contact.go`, `carddav.go`, `search.go`, `settings.go`, `theme.go`, `undo.go`,
+`attachment.go`, `certificate.go`, `window.go`, `actions.go`, `state.go`, `ipc.go`,
+`eventbus.go`, `coreimpl.go`, `detached_composer.go`, `extension_calendar.go`,
+`extension_contacts.go`, `extension_ui.go`, `log.go`, `recover.go`.
 
 ---
 
-## 6. Compose & Send Pipeline (Chi tiết)
+## 5. Data model
 
-### Compose Message Flow
+**Canonical owner: [`DATABASE.md`](DATABASE.md).** This section is a summary only. The
+authoritative schema — every migration v1..v42, every table and column, all 42 explicit
+indexes, the DSN and its PRAGMAs, foreign keys, transaction boundaries, retention rules,
+the runtime-added `attachments.content` column, and the per-extension `ext_kv` database —
+lives in `DATABASE.md`, whose generated sections are produced by
+`tools/db/schemadump` + `tools/db/gen-database-doc.py` directly from `migrations.go`.
 
-```
-Frontend (Composer.svelte)
-  │
-  ├── RecipientInput (autocomplete từ contacts store)
-  ├── Subject, Body (Tiptap rich text hoặc plain text)
-  ├── Attachments (drag & drop hoặc file picker)
-  │
-  ├── Identity selection (From: identity/alias)
-  │     └── Encrypt/Sign toggle (PGP hoặc S/MIME)
-  │
-  ├── Auto-save (30s interval)
-  │     ├── draftStore.SaveDraft() — local SQLite
-  │     ├── Encrypt body nếu PGP/SMIME enabled
-  │     └── syncDraftToIMAP() — upload lên IMAP Drafts folder
-  │
-  └── Send (SendMessage)
-        ├── ResolveIdentity() — From name/email
-        ├── buildMIMEMessage():
-        │     ├── RFC822 headers (From, To, Cc, Bcc, Subject, Date, Message-ID)
-        │     ├── go-message builder (text + HTML multipart/alternative)
-        │     ├── Attachments (base64, inline hoặc attached)
-        │     ├── Multipart/signed: S/MIME sign (nếu enabled)
-        │     ├── Multipart/encrypted: S/MIME encrypt (nếu enabled)
-        │     ├── PGP/MIME sign (nếu enabled)
-        │     └── PGP/MIME encrypt (nếu enabled)
-        ├── smtp.Send():
-        │     ├── Connect (STARTTLS → TLS, hoặc implicit TLS)
-        │     ├── Auth (LOGIN, PLAIN, hoặc XOAUTH2)
-        │     └── DATA (send message)
-        ├── AppendSentMessage() — IMAP APPEND vào Sent folder
-        ├── DeleteDraft() — IMAP STORE +FLAGS.SILENT (\Deleted) → EXPUNGE
-        ├── Emit "composer:messageSent" → main window (nếu detached)
-        └── Undo: queue DeleteSentCommand (30s timeout)
-```
+### 5.1 Shape of the system
 
-### Undo System
+One SQLite database per process, WAL mode, opened through `database.Open` so that every
+connection in the pool gets the same pragmas:
 
 ```
-Stack size: 50 commands max
-Timeout: 30 giây
-Command types:
-  - MoveCommand: undo move/trash
-  - DeleteSentCommand: undo sent message deletion
-  - FlagCommand: undo flag changes
+<data>/hsx2mail.db          30 application tables + FTS5 index + migrations ledger
+<data>/attachments/staging/ staged composer attachment blobs (7-day retention)
+<data>/extensions/<name>/data.db   per-extension database with its own ext_kv table
+<data>/keys/                device key for the AES-256-GCM credential fallback
 ```
 
-### Draft Encryption
+The main window and every detached composer are **separate OS processes** against that one
+file, which is why the DSN sets `_txlock=immediate`.
 
-- Body được mã hóa khi save nếu PGP/S/MIME enabled
-- Encrypted body lưu dạng base64 trong DB
-- Khi mở draft: decrypt tự động
+### 5.2 The three data domains
+
+| Domain | Tables | Owner package |
+|---|---|---|
+| Mail | `accounts`, `identities`, `folders`, `messages`, `attachments`, `drafts`, `oauth_tokens` | `internal/account`, `internal/folder`, `internal/message`, `internal/draft` |
+| Crypto & trust | `pgp_keys`, `pgp_sender_keys`, `pgp_keyservers`, `smime_certificates`, `smime_sender_certs`, `trusted_certificates` | `internal/pgp`, `internal/smime`, `internal/certificate` |
+| Contacts | `contact_sources`, `contact_source_addressbooks`, `contact_source_oauth`, `contact_records` + six vCard sub-tables, `carddav_record_state` | `internal/contact`, `internal/carddav` |
+| Configuration | `settings`, `app_state`, `image_allowlist`, `extension_secrets`, `fts_index_status`, `messages_fts` | `internal/settings`, `internal/appstate`, `internal/extensions` |
+
+`undo` is deliberately **not** in the database. `internal/undo` keeps the undo stack in
+memory only (`app/undo.go`); it does not survive a restart.
+
+### 5.3 The three things that bite
+
+1. **`attachments.content` is not a migration.** It is added at runtime by
+   `AttachmentStore.ensureContentColumn` (`internal/message/attachment_store.go:26-48`).
+   A database that has only been through `Migrate()` does not have it.
+2. **Migrations are forward-only.** See `SQL_ROLLBACK.md`; the ledger cannot express a
+   down path and `ADD COLUMN` is not cleanly reversible.
+3. **Retention is the only thing that bounds growth**, and it is folder-scoped, not
+   account-scoped, so Sent/Trash/Archive are never wiped by an INBOX retention pass.
+
+## 6. Sync architecture
+
+### 6.1 Entry points
+
+Five independent paths can drive a sync (`docs/analysis/10-sync-imap-idle.md` §1.1):
+`SyncFolder` (user click / draft/delete cleanup, `app/sync.go:22`), `SyncAccountComplete`,
+`SyncAllComplete` (`app/sync.go:199/350`), the polling scheduler
+(`internal/sync/scheduler.go:212`), and the IDLE-triggered blocking sync
+(`app/background.go:199/436`). Dedup is split across three mechanisms (500 ms debounce per
+`accountID:folderID` at `app/sync.go:23`, a `syncContexts` existence check, and the
+scheduler's per-account `syncing` bool) that do not all see each other.
+
+### 6.2 Two-phase sync (headers → bodies)
+
+```
+SyncMessages (internal/sync/messages.go:33)
+  1. pool.GetConnection                              messages.go:53
+  2. GetMailboxStatus (STATUS)                       messages.go:69
+  3. SelectMailbox (CONDSTORE when supported)        messages.go:77 / client.go:617
+  4. UIDValidity changed? -> DeleteByFolder, prevModSeq=0
+  5. DeleteOlderThan(account, sinceDate)  (account-wide)
+  6. GetAllUIDs -> localUIDSet
+  7. fetchUIDs (headers)                             [headerBatchSize = 50]
+  8. Upsert headers, compute ThreadID                threading.go:13
+Phase 2 (bodies, batched)
+  fetch.go: byte+count batching (512 KB / 50 msgs; 25 msgs / 256 KB for mailboxes > 1000)
+  -> fetchMessageBodiesBatch (pipelined)
+  -> UpdateBodiesBatch (1 txn)
+  -> CreateBatch(attachments) (1 txn)
+```
+
+CONDSTORE is used when the server advertises it and UIDVALIDITY is unchanged
+(`internal/sync/condstore.go:51`); otherwise sync falls back to UID-based incremental fetch.
+Threading clusters by `References`/`In-Reply-To` and subject (`internal/sync/threading.go:13`).
+
+### 6.3 Parallel model
+
+- Multiple accounts sync concurrently (separate goroutines).
+- Folders within one account sync sequentially; folder-status probing uses 5 workers
+  (`internal/sync/folders.go:22`).
+- Folder-sync concurrency cap is 2, duplicated as literals in `app/sync.go:225` and
+  `internal/sync/scheduler.go:358`.
+
+### 6.4 IDLE and polling
+
+```
+IdleManager (per account, INBOX only)          internal/imap/idle.go
+  IdleTimeout = 10 min                          idle.go:45
+  reconnect backoff 1s -> 5m, max 10 attempts   idle.go:20-26,162
+  EXISTS/FETCH/EXPUNGE -> events chan
+app/background.go:100 processIdleEvents
+  EventNewMail      -> handleIdleNewMail        (not debounced)
+  EventFlagsChanged -> 1s debounce
+  EventExpunge      -> 1s debounce
+Scheduler (fallback)                            internal/sync/scheduler.go
+  checkInterval = 1 min ticker, per-account isSyncDue on sync_interval   scheduler.go:67
+```
+
+### 6.5 Tuning constants
+
+| Constant | Value | Source |
+|---|---|---|
+| `headerBatchSize` | 50 | `internal/sync/engine.go:32` |
+| `bodyBatchMaxBytes` | 512 KB | `internal/sync/engine.go:37` |
+| `bodyBatchMaxMessages` | 50 | `internal/sync/engine.go:38` |
+| `bodyBatchMinMessages` | 1 | `internal/sync/engine.go:39` |
+| `bodyBatchQueryLimit` | 200 | `internal/sync/engine.go:40` |
+| `maxPartSize` | 10 MB | `internal/sync/engine.go:45` |
+| `maxRawMessageSize` | 50 MB | `internal/sync/engine.go:46` |
+| `maxInlineContentSize` | 5 MB | `internal/sync/engine.go:47` |
+| `flagBatchSize` | 500 | `internal/sync/messages.go:508` |
+| SyncFolder debounce | 500 ms | `app/sync.go:23` |
+| IMAP pool `MaxConnections` | 3 per account | `internal/imap/pool.go:57` |
+| Connection idle close | 5 min | `internal/imap/pool.go:58` |
+| IDLE cycle | 10 min | `internal/imap/idle.go:45` |
+| WAL checkpoint routine | 5 min | `internal/database/database.go:37` |
+| Background FTS start delay | 5 s | `app/app.go:813` |
+| Post-wake sync cooldown | 2 min | `app/background.go:781` |
+| `guardSyncPeriodDays` default | 30 | `internal/database/migrations.go:39` |
 
 ---
 
-## 7. OAuth2 Architecture (Chi tiết)
+## 7. Compose, send, and draft pipeline
 
-### Provider Resolution Chain
+### 7.1 Autosave
 
-```
-1. UserOverrideLookup: kiểm tra user-supplied credentials
-2. SlotAliasLookup: kiểm tra slot alias (cho extension cross-routing)
-3. ActiveChoiceLookup: kiểm tra explicit picker choice
-4. Default provider chain: ldflags → shipped providers
-```
+`Composer.svelte` debounces keystroke/recipient/subject changes by 10 s
+(`scheduleDraftSave`, `Composer.svelte:585`). Each save writes the local draft row first
+(encrypted if enabled) and then re-builds the RFC822 message and APPENDs it to the IMAP
+Drafts folder (`app/draft.go:326-380,589-606`). `SyncPendingDrafts` re-uploads unsynced
+drafts on the next start (`app/draft.go:655`). Local loss on crash is prevented by writing
+the DB before the IMAP append; the known risk is that the draft row's `imap_uid` is written
+back from stale in-memory state (`docs/analysis/30-compose-send-draft.md`, F1).
 
-### Supported Providers
-
-| Provider | Client ID Source | Scopes |
-|----------|-----------------|--------|
-| Google (Mail) | ldflags (GOOGLE_CLIENT_ID/SECRET) | gmail.modify, openid, profile, email |
-| Google (Testing) | ldflags (GOOGLE_TESTING_CLIENT_ID/SECRET) | contacts.readonly, calendar.* |
-| Microsoft | ldflags (MICROSOFT_CLIENT_ID) | Mail.ReadWrite, Mail.Send, offline_access, openid, profile |
-| Custom (BYOA) | User-supplied via Settings UI | User-configured |
-
-### Token Refresh Flow
+### 7.2 Send ordering (`app/compose.go:307`)
 
 ```
-OAuth token expiring ≤ 5 phút:
-  1. oauth2Manager.RefreshToken(provider, refreshToken)
-  2. Nếu thành công: update tokens trong credentials.Store
-  3. Nếu thất bại:
-     a. Emit "oauth:reauth-required" event → frontend
-     b. Frontend hiển thị "Re-authorization required" dialog
-     c. User click → StartOAuthFlow → re-authorize
+resolve identity -> build RFC822 (msg.ToRFC822)
+-> S/MIME sign/encrypt (if enabled)
+-> PGP sign/encrypt (if enabled)
+-> smtp.NewClient / Connect / Login
+-> recipients = To + Cc + Bcc
+-> client.SendMail(from, recipients, raw)
+-> append to Sent folder unless provider auto-saves (log-only on failure)
+-> add To/Cc to contact store
+-> delete local draft (log-only on failure)
+-> main window: go syncSentFolder
 ```
+
+SMTP header injection is guarded by `writeHeader` (`internal/smtp/message.go:188`); the MDN
+path does not use it (`internal/smtp/mdn.go:81`).
+
+### 7.3 Detached composer + IPC
+
+`OpenComposerWindow` (`app/ipc.go:196`) spawns `os.Executable()` with `--compose --account …
+--ipc-address … --mode … --draft-id …` and writes a 256-bit token to the child's stdin. The
+main process owns the IPC server; the composer is a client.
+
+| Property | Value | Source |
+|---|---|---|
+| Transport (Unix) | `$TMPDIR/hsx2mail-<uid>/ipc.sock`, dir 0700, socket umask 0077 | `internal/ipc/server_unix.go:70-90` |
+| Transport (Windows) | `\\.\pipe\hsx2mail-<username>` | `internal/ipc/server_windows.go:75` |
+| **Framing** | **Newline-delimited JSON** via `json.Encoder`/`json.Decoder` — **not** length-prefixed | `internal/ipc/server.go:271`, `internal/ipc/client.go:205` |
+| Auth | 64-char hex token over stdin, `subtle.ConstantTimeCompare` | `internal/ipc/token.go:23,60` |
+| Composer → Main | `message_sent`, `draft_saved`, `draft_deleted`, `composer_ready`, `composer_closed` | `internal/ipc/message.go:12-33` |
+| Main → Composer | `theme_changed`, `shutdown` | same |
+
+Known gaps: pre-auth decode has no `io.LimitReader` and `AcceptLoop` has no connection cap
+(`docs/analysis/70-platform-services.md` F-01/F-02).
 
 ---
 
-## 8. Extension System Architecture
+## 8. Extension system
 
-### Design Principles
+### 8.1 Core API surfaces (`internal/core/api/v1`)
 
-1. **Embedded, không dynamic loading**: Simpler security model
-2. **Lightweight-by-default**: Extension disabled = ~80 bytes (Bridge struct)
-3. **Lazy initialization**: Store + API constructs on first enabled call
-4. **Per-extension DB**: Calendar có SQLite riêng, Contacts dùng main DB
-5. **Method prefix convention**: `Calendar_*`, `Contacts_*` — tránh collision khi embed vào App
+`Core` exposes Mail (read-only), Composer, Contacts, Auth (HTTP/IMAP/SMTP with OAuth),
+UI (rail tabs, settings tabs, context menus, hooks), Notifications, Storage (KV, Secrets,
+read-only HostSecrets), Events (EventBus), Log, and HTML sanitization.
 
-### Core API Surface (v1)
+### 8.2 Lifecycle
 
-```
-Core interface:
-  ├── Mail()          → ListMessages, GetFolderTree, SearchMessages (read-only Phase 1)
-  ├── Composer()      → OpenComposerWindow (Phase 1)
-  ├── Contacts()      → SearchContacts, ListSources, LinkAccountSource (Phase 1)
-  ├── Auth()          → HTTPClient (OAuth-bearer), IMAPClient, SMTPClient (Phase 1)
-  ├── UI()            → RegisterRailTab, RegisterSettingsTab, RegisterContextMenuItem
-  │                     RegisterInboxView, RegisterAccountSetupHook (Phase 1)
-  ├── Notifications() → Show (desktop notification) (Phase 1)
-  ├── Storage()       → Secrets (keyring), HostSecrets (read-only), KV (stub) (Phase 1)
-  ├── Events()        → Publish, Subscribe (EventBus) (Phase 1)
-  ├── Log()           → Debug/Info/Warn/Error (Phase 1)
-  └── HTML()          → Sanitize (bluemonday) (Phase 1)
-```
+Extensions are compiled in (no dynamic loading). `App.Startup` constructs the extension
+structs and calls `ext.Register(core)` for **every** extension, enabled or not
+(`app/app.go:657-679`). Registration is descriptive — it wires UI surfaces that persist
+across enable/disable; the frontend filters by enabled state. The Wails-bound surface lives
+on each extension's `Bridge` struct, embedded into `App` via method promotion.
 
-### Extension Lifecycle
+### 8.3 Disabled-extension cost
 
-```
-Build time:
-  - Extension code compiled vào binary (không dynamic linking)
-
-App.Startup:
-  ├── NewExtension() → construct Extension struct (manifest + Register only)
-  ├── NewBridge()    → construct Bridge struct (Wails-bound surface, embedded vào App)
-  ├── Register(core) → wire UI surfaces, hooks
-  │     ├── ContactsExt: RegisterRailTab("Contacts"), RegisterAccountSetupHook
-  │     └── CalendarExt: RegisterRailTab("Calendar"), RegisterSettingsTab
-  └── extensionUnregs = append(unregs)
-
-Runtime:
-  - Mỗi bridge method gọi gateEnabled() → kiểm tra settings
-  - Nếu disabled: return early (không work, không DB access)
-  - Nếu enabled: lazy-init (sync.Once) → mở per-extension DB → execute
-
-Shutdown:
-  - extensionUnregs[i]() → cleanup UI registrations
-```
-
-### First-Party Extensions Detail
-
-#### Calendar Extension
-```
-Backend (Go):
-  ├── bridge.go          — Wails-bound methods (Calendar_* prefix)
-  │                        gateEnabled → ensureInit → API call
-  ├── api.go             — Calendar API (events CRUD, CalDAV sync)
-  ├── caldav.go          — CalDAV client (go-webdav + go-ical)
-  ├── sync.go            — CalDAV sync engine
-  ├── store.go           — Per-extension SQLite (calendar.db)
-  ├── rrule_expand.go    — RRULE expansion (teambition/rrule-go)
-  ├── microsoft/         — Microsoft Graph calendar API
-  └── google/            — Google Calendar API
-
-Frontend (Svelte/TS):
-  ├── components/        — Calendar UI (EventCard, views, dialogs)
-  ├── stores/            — Calendar state
-  ├── i18n/              — 10 locales
-  └── hooks/             — Keyboard shortcuts, deep links
-```
-
-#### Contacts Extension
-```
-Backend (Go):
-  ├── bridge.go          — Wails-bound methods (Contacts_* prefix)
-  ├── store.go           — Tables in main DB (contact_records)
-  ├── google_api.go      — Google Contacts API
-  ├── google_convert.go  — Convert Google → internal contact
-  ├── google_write.go    — Write operations (create/update Google contacts)
-  ├── microsoft_api.go   — Microsoft Graph contacts API
-  ├── microsoft_convert.go — Convert Microsoft → internal contact
-  ├── microsoft_write.go   — Write operations (create/update Microsoft contacts)
-  ├── ms_sidecar.go      — Microsoft sidecar sync
-  ├── oauth_client.go    — OAuth HTTP client for contacts API
-  ├── imaging/           — Contact photo processing
-  └── convert.go         — Generic contact conversion
-
-Frontend (Svelte/TS):
-  ├── components/        — Contact UI (ContactDetail, AddContactDialog, fields)
-  ├── stores/            — Contacts state
-  ├── i18n/              — 10 locales
-  └── hooks/             — Keyboard shortcuts
-```
+A disabled extension contributes one `Bridge` struct to the `App` allocation. Measured cost
+is **104 bytes per bridge** (`docs/analysis/70-platform-services.md` §1.4), not the ~80 bytes
+claimed by older docs. No DB connection, goroutine, or network activity exists while disabled;
+the extension stores are opened lazily on the first enabled call (`Bridge.ensureInit`,
+`sync.Once`).
 
 ---
 
-## 9. Security Posture
+## 9. Security architecture
 
-### Authentication & Credentials
+### 9.1 Credentials
 
-```
-Layer 1: OS Keyring (primary)
-  - Linux: Secret Service (D-Bus) via golang-keyring
-  - macOS: Keychain
-  - Windows: Credential Manager
+`credentials.NewStore` probes the OS keyring once at startup with a real Set/Delete round-trip
+and caches the result (`internal/credentials/store.go:26-67`). Secrets are AES-256-GCM
+encrypted per call in `internal/crypto/crypto.go:122`. Fallback caveat: a runtime keyring
+failure silently downgrades a write into the DB column and is never migrated back
+(`docs/analysis/70-platform-services.md` F-15), and the AES fallback key is not a strong
+boundary against a local attacker (F-16).
 
-Layer 2: AES-GCM Encrypted SQLite (fallback)
-  - Khi OS keyring không available (headless Linux, container, etc.)
-  - Encryption key derived từ machine-specific values
-```
+### 9.2 OAuth2
 
-### Input Validation
+Authorization-code + PKCE (S256) with `state` validation
+(`internal/oauth2/flow.go:164`), an embedded loopback HTTP callback server, provider presets
+for Google/Microsoft plus custom providers, and token exchange/refresh. The OAuth callback
+error page reflects query values into HTML without escaping
+(`internal/oauth2/server.go:173`) — a known XSS gap.
 
-| Field | Max Length | Validation |
-|-------|-----------|------------|
-| Email address | 254 (RFC 5321) | Contains @, non-empty local-part + domain |
-| Subject | 998 (RFC 5322 line length) | sanitizeField (strip CR/LF) |
-| Body | 64KB | sanitizeField (strip CR/LF) |
-| mailto: URL | 2KB | Prefix check, URL decode, query parse |
+### 9.3 TLS TOFU
 
-### Header Injection Prevention
+`certificate.BuildTLSConfigDynamic` wraps IMAP/SMTP/CardDAV/CalDAV with
+`InsecureSkipVerify: true` plus full manual verification against the
+`trusted_certificates` store (`internal/certificate/verifier.go:19,66-83`). Fingerprint
+mismatch triggers the trust dialog. WKD/HKP PGP key fetches bypass this stack (F-20).
 
-`sanitizeField()` strips `\r` và `\n` từ tất cả email fields (to, cc, bcc, subject, etc.)
+### 9.4 Email crypto
 
-### URL Protocol Allowlist
+| Feature | Sign | Verify | Encrypt | Decrypt |
+|---|---|---|---|---|
+| S/MIME | `smime.Signer` | `smime.Verifier` | `smime.Encryptor` | `smime.Decryptor` |
+| PGP | `pgp.Signer` | `pgp.Verifier` | `pgp.Encryptor` | `pgp.Decryptor` |
 
-```
-Allowed: http://, https://, mailto:
-Denied: file://, javascript:, vbscript:, data:, etc.
-```
+PGP key discovery: WKD (5 s timeout, 1 MB limit) and HKP (5 s, 1 MB, sequential). Signer
+identity is not bound to the `From:` header (F-19).
 
-### HTML Sanitization
+### 9.5 Hardening measures present
 
-- Library: bluemonday (strict policy)
-- Strips: scripts, event handlers, remote images (trừ khi allowed)
-- Same policy shared giữa mail viewer và extensions (HTML() surface)
-
-### TLS Certificate Handling
-
-- **TOFU** (Trust On First Use): lưu fingerprint vào `certificates` table
-- Khi fingerprint mismatch: show dialog → user accept/reject
-- Dynamic TLS config: `certificate.BuildTLSConfigDynamic()`
-- Applied to: IMAP, SMTP, CardDAV, CalDAV
-
-### IPC Security
-
-- Unix domain socket (file-based permissions)
-- Token auth: per-session random token, truyền qua stdin pipe
-- Không dùng TCP socket hay mạng
+- `sanitizeField` strips CR/LF from address fields (`app/app.go:153`); used only by
+  `parseMailtoURL`.
+- URL protocol allowlist (`http`, `https`, `mailto`); `exec.Command` without a shell.
+- HTML sanitization via `bluemonday` (`internal/email/sanitizer.go`). Note the message
+  body iframe currently allows scripts (`frontend/src/lib/components/viewer/EmailBody.svelte:785`).
+- SQLite file 0600, directory 0700.
+- IPC token auth over stdin, constant-time compare.
+- Randomness is `crypto/rand` everywhere; no `math/rand`, no hardcoded IVs/keys.
 
 ---
 
-## 10. Frontend Architecture (Chi tiết)
+## 10. Frontend architecture
 
-### Store Pattern
+**Canonical owner: [`FRONTEND.md`](FRONTEND.md).** Svelte 5 with runes, Vite, Tailwind 3,
+`bits-ui` primitives, Tiptap for the composer, `@tanstack/svelte-virtual` for the
+conversation list, `svelte-i18n` with 10 locales. Full store graph, component tree,
+event list, layout modes and the virtualizer configuration are in `FRONTEND.md`.
 
-Svelte 5 stores dùng class-based pattern với runes:
+Two things that are structural rather than detail:
 
-```typescript
-class AccountStore {
-  accounts = $state<AccountWithFolders[]>([])
-  selectedFolder = $state<SelectedFolder | null>(null)
-  syncProgress = $state<Record<string, Record<string, SyncProgress>>>({})
-  // ...
-}
+- **`app/` is the only Wails-bound layer.** The frontend reaches Go exclusively through the
+  generated bindings in `frontend/wailsjs/` (regenerate with `make generate`, never edit)
+  and Wails events. There is no HTTP surface.
+- **The composer is a separate entry point, not a store.** `frontend/src/main.ts` +
+  `App.svelte` are the main window; `frontend/src/composerMain.ts` + `ComposerApp.svelte`
+  are a detached composer, which talks to the main window over the Unix-socket IPC server
+  rather than through shared Svelte state. There is no `stores/composer.svelte.ts`.
 
-export const accountStore = new AccountStore()
-```
+## 11. Background operation and Linux session integration
 
-### Component Communication
+**Canonical owner: [`BACKGROUND.md`](BACKGROUND.md).** Startup ordering,
+`start_hidden`/`run_background` coupling, close semantics, autostart, the tray icon,
+single-instance handoff, and the event-driven sleep/wake, network and session-lock
+monitors are all documented there. Summary:
 
-1. **Wails Bindings**: Go methods → TypeScript bindings (auto-generated)
-   - `app/account.go` → `wailsjs/go/app/App.js` → `GetAccounts()`
-2. **Wails Events**: `EventsEmit` (Go) → `EventsOn` (frontend)
-   - `sync:progress`, `folder:synced`, `oauth:success`, `app:ready`
-3. **Svelte Props**: Parent → child component
-4. **Svelte Stores**: Global state (cross-component)
-5. **Extension UI Registry**: Extension đăng ký rail tabs → App.svelte render
+- **`run_background` on** → closing the window *hides* it; the process keeps syncing.
+  `QuitApp` is the only real exit. With background mode on there is deliberately no
+  window-closed way to quit.
+- **A tray icon exists** (`internal/tray`, wrapping `fyne.io/systray`, because Wails v2 has
+  no tray API). It is created exactly when the instance can be window-less:
+  `run_background OR autostart`. Older prose describing `run_background` as "minimize to
+  tray" predates the tray and is wrong.
+- **Monitors are event-driven, not polled.** Network, sleep/wake, session lock and theme
+  are all D-Bus-driven on Linux.
+- **Boot-storm control**: a 3-slot semaphore, a 30 s per-account initial jitter draw, and
+  exponential failure backoff from 2 min to 60 min, so a boot with N accounts does not open
+  N connections at once and an outage does not become an N-connection retry storm.
+
+## 12. Build and distribution
+
+`Makefile` targets: `build`, `build-linux`, `dev`, `dev-race` (Wails builds with
+`-tags webkit2_41`), `generate` (`wails generate module`), `test` (`go test ./...`), `lint`
+(golangci-lint + ESLint), `fmt`, `clean`, `frontend-deps`, `install`/`uninstall` (Linux,
+macOS), `build-windows-installer` (`wails build -nsis`), and the Flatpak targets.
+
+Flatpak manifests live in `build/flatpak/`:
+
+- `io.github.beheoxinh.Hsx2Mail-dev.yml` — packages a host-built binary; emits
+  `build/bin/Hsx2Mail-dev.flatpak`.
+- `build/flatpak/flathub/io.github.beheoxinh.Hsx2Mail.yml` — the Flathub from-source manifest.
+
+**Flatpak is currently broken (P0).** The Flathub manifest builds with `-mod=vendor` while
+the repository has no `vendor/` directory (`docs/analysis/80-build-packaging.md` F-01), the
+`org.freedesktop.portal.Desktop` talk-name required by the default notification path is
+missing (F-02), the release tooling still references the old `hkdb`/`Aerion` identity (F-03),
+and `runtime-version: '50'` is not yet available on Flathub. These blockers are owned by
+`docs/PLAN.md` Phase 0.
+
+OAuth credentials are injected at build time from `.env` into ldflags
+(`internal/oauth2` package variables); the `cmd/hsx2mail-creds` helper is exec'd as a sibling
+binary.
 
 ---
 
-## 11. Đánh giá Kiến trúc
+## 13. Testing strategy
 
-### Điểm mạnh
-
-1. **No CGO SQLite**: modernc.org/sqlite cho phép cross-compile dễ dàng, Flatpak build không cần C toolchain
-2. **Preflight pattern**: Tách initialization khỏi Wails Startup → tránh flash window lỗi
-3. **Multi-process composer**: Không block main window khi compose, IPC an toàn
-4. **Event-driven monitors**: D-Bus-based (sleep/wake, network, theme) — zero polling
-5. **TOFU certificate handling**: User-friendly, không phụ thuộc CA
-6. **Extension isolation**: Per-extension DB, lightweight disabled state
-7. **CONDSTORE sync**: Optimized cho IMAP (modseq-based incremental sync)
-8. **Atomic migrations**: Transaction-based rollback on failure
-
-### Điểm yếu / Rủi ro
-
-1. **go-imap v2 beta**: Dependency vào beta package (API có thể thay đổi, bug tiềm ẩn)
-2. **Frameless window mặc định**: Có thể gây issue trên một số WM (đã có native option)
-3. **Single process DB pool**: Mỗi composer process mở DB riêng → lock contention tiềm ẩn
-4. **Extension không dynamic loading**: Muốn thêm extension mới phải rebuild binary
-5. **No rate limiting trên IMAP**: Không có rate limiting cho sync requests (có thể bị IMAP server block)
-6. **Spellcheck worker chưa kiểm tra**: nspell + hunspell dictionaries trong web worker
-7. **No automated UI tests**: Chỉ có Go unit tests, không có integration/E2E tests
-8. **DB migration rollback phải manual**: tools/db/rollback*.sql — user phải tự chạy
-
-### Khuyến nghị
-
-1. **Thêm rate limiting** cho sync engine (tránh bị IMAP server rate limit)
-2. **Go-imap v2 stabilization**: Theo dõi upstream, plan migration lên stable
-3. **Add integration tests** với test IMAP/SMTP server (GreenMail, etc.)
-4. **Extension hot-reload**: Cho phép dev mode load extension từ filesystem
-5. **DB migration versioning**: Thêm forward-only guard mạnh hơn
-6. **Connection pool monitoring**: Add metrics cho IMAP pool utilization
+- Go tests exist for most core packages, including `internal/account`, `appstate`, `carddav`,
+  `certificate`, `contact`, `core`, `credentials`, `crypto`, `database`, `draft`, `email`,
+  `extensions`, `extensions/auth`, `extensions/ui`, `folder`, `imap`, `ipc`, `message`,
+  `notification`, `oauth2`, `pgp`, `platform`, `settings`, `smime`, `smtp`, `sync`, `undo`,
+  plus `app/`, `main_test.go`, `cmd/hsx2mail-creds`, and the extension backends
+  (`extensions/calendar/backend` 17 files, `extensions/contacts/backend` 8 files).
+- **`internal/database` is red on the v0.3.2 tree**: `database_test.go:202` and `:379` fail
+  re-migration with `duplicate column name: secondary_sync_interval` (the v41 column is
+  missing from the test's drop list).
+- **The frontend has zero tests**: no `*.test.ts` / `*.spec.ts`, no vitest/jest/playwright
+  config (`docs/analysis/50-frontend.md` §0).
+- **There are no CI workflows**: `.github/workflows/` does not exist, so lint and
+  `svelte-check` never gate a merge.
+- Run commands: `make test` (`go test ./...`) and `make lint`.
 
 ---
 
-## 12. Build & Distribution
+## 14. Known limitations and technical debt
 
-| Target | Command | Output |
-|--------|---------|--------|
-| Linux native | `make build` | `build/bin/hsx2mail` |
-| Linux Flatpak | `make flatpak` | Flatpak package |
-| macOS | `make build` | `build/bin/Hsx2Mail.app` |
-| Windows | `make build` | `build/bin/hsx2mail.exe` |
-| Windows installer | `make build-windows-installer` | NSIS installer |
-| Dev mode | `make dev` | Vite hot-reload + Wails dev |
+Structure, not a defect ledger. Status of the remediation phases:
 
-### Build Tags
+| Area | Status |
+|---|---|
+| Build/CI | **Fixed.** Flatpak builds (`make flatpak`, `build/flatpak/build-local.sh`); `make check` is the gate. |
+| Data integrity | **Fixed.** `DeleteOlderThanInFolder` is folder-scoped; header upsert no longer blanks bodies; body writes are transacted. |
+| Sync/store performance | **Fixed.** FTS and per-page aggregation rewrites; the eight v42 indexes. See `PERFORMANCE.md` §5. |
+| Background/session | **Fixed.** Tray exists (`internal/tray`); Flatpak autostart uses `FLATPAK_ID`; single-instance TOCTOU addressed; composer lifetime bounded by the IPC connection cap. See `BACKGROUND.md`. |
+| Frontend | **Fixed.** Virtualized list, byte-budgeted attachment cache, per-listener unsubscribe instead of `EventsOff`. See `FRONTEND.md`. |
+| Security | **Fixed.** Keyring failure no longer silently downgrades; IPC frames size-capped and connections capped (`internal/ipc/server.go:19-37`). See `CRYPTO.md` §8. |
+| Docs | **This consolidation.** `/docs` is the single source of truth; see `README.md` for the index and maintenance rules. |
 
-- `webkit2_41`: Linux WebKit2GTK 4.1
-- `bindings`: Wails binding generation (skips preflight)
-- `linux, production`: Production Linux build
+The authoritative defect record remains `docs/analysis/90-verification.md`, the
+post-implementation reviews `docs/analysis/97-post-implementation-review.md` and
+`docs/analysis/98-post-fix-verification.md`, and any remaining open items
+`docs/GAPS.md` / `docs/PLAN.md`.
+| Docs | Old `architecture.md`/`AGENTS.md` claims corrected; other docs still partly stale | PLAN Phase 6 |
 
-### LDFLAGS (OAuth Credentials)
-
-```
--X internal/oauth2.GoogleClientID
--X internal/oauth2.GoogleClientSecret
--X internal/oauth2.MicrosoftClientID
--X internal/oauth2.GoogleTestingClientID
--X internal/oauth2.GoogleTestingClientSecret
-```
-
-Nguồn: `.env` hoặc `.env.local`
+Historical note: this file was rewritten in v0.3.2 to correct verified-wrong claims in the
+previous revision (migration range `v1..v39` (now v1..v42), a non-existent `undo_commands` table, D-Bus
+single-instance, length-prefixed IPC framing, the wrong certificate table name, and the
+disabled-extension byte figure). See `docs/analysis/95-existing-docs-audit.md`.

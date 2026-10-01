@@ -82,6 +82,8 @@ export function PrepareReply():Promise<smtp.ComposeMessage>;
 
 export function ReadFileAsAttachment(arg1:string):Promise<app.ComposerAttachment>;
 
+export function ReadFileAsInlineImage(arg1:string):Promise<app.ComposerAttachment>;
+
 export function RefreshWindowConstraints():Promise<void>;
 
 export function SaveDraft(arg1:string,arg2:smtp.ComposeMessage,arg3:string):Promise<draft.Draft>;
@@ -91,5 +93,7 @@ export function SearchContacts(arg1:string,arg2:number):Promise<Array<contact.Co
 export function SendMessage(arg1:string,arg2:smtp.ComposeMessage):Promise<void>;
 
 export function Shutdown(arg1:context.Context):Promise<void>;
+
+export function StageAttachment(arg1:string,arg2:string,arg3:string):Promise<app.ComposerAttachment>;
 
 export function Startup(arg1:context.Context):Promise<void>;

@@ -357,7 +357,8 @@ export namespace app {
 	    filename: string;
 	    contentType: string;
 	    size: number;
-	    data: string;
+	    stagingId?: string;
+	    data?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ComposerAttachment(source);
@@ -368,6 +369,7 @@ export namespace app {
 	        this.filename = source["filename"];
 	        this.contentType = source["contentType"];
 	        this.size = source["size"];
+	        this.stagingId = source["stagingId"];
 	        this.data = source["data"];
 	    }
 	}
@@ -2592,6 +2594,8 @@ export namespace smtp {
 	    content_base64?: string;
 	    content_id: string;
 	    inline: boolean;
+	    staging_id?: string;
+	    size?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Attachment(source);
@@ -2605,6 +2609,8 @@ export namespace smtp {
 	        this.content_base64 = source["content_base64"];
 	        this.content_id = source["content_id"];
 	        this.inline = source["inline"];
+	        this.staging_id = source["staging_id"];
+	        this.size = source["size"];
 	    }
 	}
 	export class ComposeMessage {

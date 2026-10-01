@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/beheoxinh/hsx2mail/internal/message"
 	gomessage "github.com/emersion/go-message"
 	"github.com/google/uuid"
-	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/teamwork/tnef"
 )
 
@@ -240,4 +240,3 @@ func decodeRFC2047(s string) (string, error) {
 	dec := new(mime.WordDecoder)
 	return dec.DecodeHeader(s)
 }
-

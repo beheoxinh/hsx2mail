@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import Icon from '@iconify/svelte'
   import { BrowserOpenURL } from '../../../../wailsjs/runtime/runtime'
   import { GetInlineAttachments, AddImageAllowlist, OpenURL } from '../../../../wailsjs/go/app/App'
-  import { getCached, setCache } from '../../stores/inlineAttachmentCache'
+  import { clearCache, getCached, setCache } from '../../stores/inlineAttachmentCache'
   import { isImageAllowedSync, refreshImageAllowlist } from '$lib/stores/imageAllowlist.svelte'
   import { setFocusedPane, focusPreviousPane, focusNextPane } from '$lib/stores/keyboard.svelte'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
@@ -23,6 +24,12 @@
   }
 
   let { messageId, accountId: _accountId, bodyHtml = '', bodyText = '', fromEmail = '', onCompose, onImagesLoaded, encryptedInlineAttachments, darken = false }: Props = $props()
+
+  // Inline attachment bytes (decrypted) are cached by message id for the
+  // duration of the view. Only one EmailBody is mounted at a time, so dropping
+  // the whole cache on unmount both bounds the memory and stops one message's
+  // decrypted content outliving its view.
+  onDestroy(() => clearCache())
 
   // State for remote image handling
   let imagesBlocked = $state(true)
@@ -170,6 +177,11 @@
   function buildIframeContent(html: string, applyDarken: boolean): string {
     const processedHtml = processHtml(html, imagesBlocked)
     const imgSrc = imagesBlocked ? "'self' data:" : '* data:'
+    // Per-render nonce: the renderer script below carries it, so nothing
+    // embedded in the email HTML can execute. With `script-src 'unsafe-inline'`
+    // a `<script>` or event handler in a mail ran with full DOM access in this
+    // frame. ponytail: 'unsafe-inline' + no nonce was the old contract.
+    const nonce = crypto.randomUUID().replace(/-/g, '')
 
     // Double-invert: page-level invert + image-level re-invert keeps photos
     // looking normal while flipping text, backgrounds, and CSS-defined colors.
@@ -359,7 +371,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; img-src ${imgSrc}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; img-src ${imgSrc}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; form-action 'none';">
   <sty` + `le>${darkenStyles}
     /* Minimal base styles - avoid overriding email's inline styles */
     * { box-sizing: border-box; }
@@ -388,7 +400,7 @@
 </head>
 <body>
 ${processedHtml}
-<scr` + `ipt>${iframeScript}</scr` + `ipt>
+<scr` + `ipt nonce="${nonce}">${iframeScript}</scr` + `ipt>
 </body>
 </html>`
   }
@@ -782,7 +794,7 @@ ${processedHtml}
     <iframe
       bind:this={iframeElement}
       title={$_('aria.emailContent')}
-      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      sandbox="allow-scripts allow-popups"
       class="w-full border-0 rounded-md min-h-[100px]"
       style="height: 200px; background-color: {iframeOuterBg};"
     ></iframe>

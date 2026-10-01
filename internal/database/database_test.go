@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -140,6 +141,110 @@ func TestMigrationV29_OAuthCompositeKey(t *testing.T) {
 	}
 }
 
+// dropColumnsAddedBy reverts the schema to its state before migration
+// `fromVersion` by dropping every column that migrations at or after
+// `fromVersion` add via ALTER TABLE ... ADD COLUMN.
+//
+// The list is derived from the migrations slice rather than hardcoded: a
+// hand-written list silently goes stale the moment a new migration adds a
+// column, and the re-migrate then dies with "duplicate column name".
+func dropColumnsAddedBy(t *testing.T, db *DB, fromVersion int) {
+	t.Helper()
+
+	re := regexp.MustCompile(`(?is)ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)`)
+	type tableCol struct{ table, column string }
+	var targets []tableCol
+	seen := make(map[string]bool)
+	for _, m := range migrations {
+		if m.Version < fromVersion {
+			continue
+		}
+		for _, match := range re.FindAllStringSubmatch(m.SQL, -1) {
+			key := match[1] + "." + match[2]
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			targets = append(targets, tableCol{match[1], match[2]})
+		}
+	}
+
+	// Drop dependent indexes first. SQLite refuses ALTER TABLE ... DROP COLUMN
+	// while any index still references the column -- including a partial
+	// index's WHERE clause, which is how idx_messages_needs_body mentions
+	// messages.body_failed. Each index is recreated by the migration that
+	// owns it when the re-migrate replays from fromVersion.
+	tables := make(map[string]bool)
+	for _, tc := range targets {
+		tables[tc.table] = true
+	}
+	for table := range tables {
+		rows, err := db.Query(
+			`SELECT name, COALESCE(sql, '') FROM sqlite_master
+			 WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, table)
+		if err != nil {
+			t.Fatalf("list indexes on %s: %v", table, err)
+		}
+		type indexDef struct{ name, sql string }
+		var indexes []indexDef
+		for rows.Next() {
+			var i indexDef
+			if err := rows.Scan(&i.name, &i.sql); err != nil {
+				rows.Close()
+				t.Fatalf("scan index on %s: %v", table, err)
+			}
+			indexes = append(indexes, i)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("iterate indexes on %s: %v", table, err)
+		}
+		rows.Close()
+
+		for _, idx := range indexes {
+			dependent := false
+			for _, tc := range targets {
+				if tc.table != table {
+					continue
+				}
+				if identifierRegex.MatchString(idx.sql) && containsIdentifier(idx.sql, tc.column) {
+					dependent = true
+					break
+				}
+			}
+			if !dependent {
+				continue
+			}
+			if _, err := db.Exec("DROP INDEX IF EXISTS " + idx.name); err != nil {
+				t.Logf("skip drop index %s: %v", idx.name, err)
+			}
+		}
+	}
+
+	for _, tc := range targets {
+		// A column may legitimately be absent if a later migration
+		// dropped or rebuilt its table; that is not a test failure.
+		if _, err := db.Exec(`ALTER TABLE ` + tc.table + ` DROP COLUMN ` + tc.column); err != nil {
+			t.Logf("skip drop %s.%s: %v", tc.table, tc.column, err)
+		}
+	}
+	if !seen["accounts.secondary_sync_interval"] && fromVersion <= 41 {
+		t.Fatalf("dropColumnsAddedBy: v41 column not discovered; migration parser is stale")
+	}
+}
+
+var identifierRegex = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+// containsIdentifier reports whether ident appears as a whole word in s.
+func containsIdentifier(s, ident string) bool {
+	for _, m := range identifierRegex.FindAllString(s, -1) {
+		if m == ident {
+			return true
+		}
+	}
+	return false
+}
+
 // TestMigrationV32_LocalRecordIDsRewrittenToUUIDs verifies that migration 32
 // transforms "local-<email>" record IDs into canonical UUIDv4s while keeping
 // the contact_emails references intact. Simulates the upgrade path for a user
@@ -169,33 +274,10 @@ func TestMigrationV32_LocalRecordIDsRewrittenToUUIDs(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM migrations WHERE version >= 32`); err != nil {
 		t.Fatalf("clear migration 32+ markers: %v", err)
 	}
-	// Drop v34's photo columns so its re-application's ADD COLUMNs don't
-	// collide. SQLite supports DROP COLUMN since 3.35; modernc.org/sqlite
-	// is well past that.
-	for _, col := range []string{"photo_data", "photo_media_type", "photo_url"} {
-		if _, err := db.Exec(`ALTER TABLE contact_records DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop %s for re-migrate: %v", col, err)
-		}
-	}
-	// Drop v36's encrypted fallback columns on oauth_tokens for the same
-	// reason — re-running v36 ADDs them again.
-	for _, col := range []string{"encrypted_access_token", "encrypted_refresh_token"} {
-		if _, err := db.Exec(`ALTER TABLE oauth_tokens DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop oauth_tokens.%s for re-migrate: %v", col, err)
-		}
-	}
-	// Drop v37's SMTP-receive-only / SMTP-creds columns + v38's
-	// reply_forward_identity_id on accounts so the re-application's ADD
-	// COLUMNs don't collide.
-	for _, col := range []string{"no_outgoing_server", "smtp_username", "encrypted_smtp_password", "reply_forward_identity_id", "oauth_stable_id"} {
-		if _, err := db.Exec(`ALTER TABLE accounts DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop accounts.%s for re-migrate: %v", col, err)
-		}
-	}
-	// Same for v39's body_failed on messages.
-	if _, err := db.Exec(`ALTER TABLE messages DROP COLUMN body_failed`); err != nil {
-		t.Fatalf("drop messages.body_failed for re-migrate: %v", err)
-	}
+	// Drop every column the v32+ migrations add so their re-application's
+	// ADD COLUMNs don't collide. SQLite supports DROP COLUMN since 3.35;
+	// modernc.org/sqlite is well past that.
+	dropColumnsAddedBy(t, db, 32)
 
 	// Re-run migrations — migration 32 should rewrite the seeded local- id.
 	if err := db.Migrate(); err != nil {
@@ -326,28 +408,9 @@ func TestMigrationV33_CleansExistingOrphans(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("rewind to v32 schema: %v", err)
 	}
-	// Drop v34's photo columns so re-application's ADD COLUMNs don't collide.
-	for _, col := range []string{"photo_data", "photo_media_type", "photo_url"} {
-		if _, err := db.Exec(`ALTER TABLE contact_records DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop %s for re-migrate: %v", col, err)
-		}
-	}
-	// Same for v36's encrypted oauth_tokens fallback columns.
-	for _, col := range []string{"encrypted_access_token", "encrypted_refresh_token"} {
-		if _, err := db.Exec(`ALTER TABLE oauth_tokens DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop oauth_tokens.%s for re-migrate: %v", col, err)
-		}
-	}
-	// Same for v37 + v38 + v40's accounts columns.
-	for _, col := range []string{"no_outgoing_server", "smtp_username", "encrypted_smtp_password", "reply_forward_identity_id", "oauth_stable_id"} {
-		if _, err := db.Exec(`ALTER TABLE accounts DROP COLUMN ` + col); err != nil {
-			t.Fatalf("drop accounts.%s for re-migrate: %v", col, err)
-		}
-	}
-	// And v39's body_failed on messages.
-	if _, err := db.Exec(`ALTER TABLE messages DROP COLUMN body_failed`); err != nil {
-		t.Fatalf("drop messages.body_failed for re-migrate: %v", err)
-	}
+	// Drop every column the v33+ migrations add so their re-application's
+	// ADD COLUMNs don't collide.
+	dropColumnsAddedBy(t, db, 33)
 
 	// Seed: orphan state row whose addressbook doesn't exist. Pre-migration,
 	// this insert succeeds because the FK isn't there.

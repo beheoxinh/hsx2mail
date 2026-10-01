@@ -10,8 +10,11 @@ import (
 	"runtime"
 	"strings"
 	goSync "sync"
+	"sync/atomic"
 	"time"
 
+	extcalendarbe "github.com/beheoxinh/hsx2mail/extensions/calendar/backend"
+	extcontactsbe "github.com/beheoxinh/hsx2mail/extensions/contacts/backend"
 	"github.com/beheoxinh/hsx2mail/internal/account"
 	"github.com/beheoxinh/hsx2mail/internal/appstate"
 	"github.com/beheoxinh/hsx2mail/internal/carddav"
@@ -21,8 +24,6 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/credentials"
 	"github.com/beheoxinh/hsx2mail/internal/database"
 	"github.com/beheoxinh/hsx2mail/internal/draft"
-	extcalendarbe "github.com/beheoxinh/hsx2mail/extensions/calendar/backend"
-	extcontactsbe "github.com/beheoxinh/hsx2mail/extensions/contacts/backend"
 	extauth "github.com/beheoxinh/hsx2mail/internal/extensions/auth"
 	extcompose "github.com/beheoxinh/hsx2mail/internal/extensions/compose"
 	extmail "github.com/beheoxinh/hsx2mail/internal/extensions/mail"
@@ -31,15 +32,17 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/ipc"
 	"github.com/beheoxinh/hsx2mail/internal/kit/davutil"
+	"github.com/beheoxinh/hsx2mail/internal/launcherbadge"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/notification"
 	"github.com/beheoxinh/hsx2mail/internal/oauth2"
+	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/platform"
 	"github.com/beheoxinh/hsx2mail/internal/settings"
-	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
 	"github.com/beheoxinh/hsx2mail/internal/sync"
+	"github.com/beheoxinh/hsx2mail/internal/tray"
 	"github.com/beheoxinh/hsx2mail/internal/undo"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -238,14 +241,14 @@ type App struct {
 	// into App via its Bridge struct (declared at the top of this struct
 	// definition); the *Extension field below is the lightweight lifecycle
 	// handle the host's knownExtensions Register loop iterates.
-	authBroker       *extauth.Broker      // coreapi.Auth impl for extensions
-	mailAPI          *extmail.API         // coreapi.Mail impl wrapping core stores
-	composerAPI      *extcompose.API      // coreapi.Composer impl wrapping OpenComposerWindow
-	uiRegistry       *extui.Registry      // coreapi.UI impl: rail tabs, account-setup hooks, ...
-	contactsExt      *extcontactsbe.Extension // Contacts lifecycle handle (manifest + Register only)
-	calendarExt      *extcalendarbe.Extension // Calendar lifecycle handle (manifest + Register only)
-	knownExtensions  []coreapi.Extension      // all first-party extensions, iterated by ListExtensions
-	extensionUnregs  []coreapi.Unregister     // teardown funcs returned from each Extension.Register
+	authBroker      *extauth.Broker          // coreapi.Auth impl for extensions
+	mailAPI         *extmail.API             // coreapi.Mail impl wrapping core stores
+	composerAPI     *extcompose.API          // coreapi.Composer impl wrapping OpenComposerWindow
+	uiRegistry      *extui.Registry          // coreapi.UI impl: rail tabs, account-setup hooks, ...
+	contactsExt     *extcontactsbe.Extension // Contacts lifecycle handle (manifest + Register only)
+	calendarExt     *extcalendarbe.Extension // Calendar lifecycle handle (manifest + Register only)
+	knownExtensions []coreapi.Extension      // all first-party extensions, iterated by ListExtensions
+	extensionUnregs []coreapi.Unregister     // teardown funcs returned from each Extension.Register
 
 	// coreapi.EventBus implementation, lazily constructed on first
 	// Core.Events() call (via eventBusInitOnce). Extensions consume via
@@ -277,6 +280,12 @@ type App struct {
 
 	// Undo system
 	undoStack *undo.Stack
+
+	// launcherBadge publishes the unread count to the desktop shell (Dash to
+	// Dock, Ubuntu Dock, Dash to Panel) so the dock icon can show a badge.
+	// Inert on stock GNOME, which has no badge API; failures are logged and
+	// ignored, never fatal.
+	launcherBadge *launcherbadge.Badge
 
 	// IPC for multi-window support (composer windows)
 	ipcServer   ipc.Server
@@ -323,10 +332,19 @@ type App struct {
 
 	// Draft IMAP sync goroutine tracking — cancel in-flight syncDraftToIMAP
 	draftSyncContexts map[string]context.CancelFunc // keyed by draft ID
-	draftSyncDone     map[string]chan struct{}       // closed when goroutine exits
+	draftSyncDone     map[string]chan struct{}      // closed when goroutine exits
 
 	// Sleep/wake detection for auto-sync on wake
 	sleepWakeMonitor platform.SleepWakeMonitor
+
+	// Session lock state, used to strip notification content shown on the
+	// lock screen (Phase 3 task 3-14).
+	// sessionLock is written by the startup path and read from the IDLE
+	// notification goroutine, so it needs a lock — an unsynchronised interface
+	// field is a data race that -race flags as soon as mail arrives while the
+	// monitor is still initialising.
+	sessionLockMu goSync.RWMutex
+	sessionLock   platform.SessionLockMonitor
 
 	// Network connectivity monitoring (event-driven, zero polling)
 	networkMonitor platform.NetworkMonitor
@@ -349,6 +367,10 @@ type App struct {
 	// Autostart manager
 	autostartMgr platform.AutostartManager
 
+	// startHiddenOverride is set from the --start-hidden command-line flag and
+	// forces a window-less boot regardless of the stored settings.
+	startHiddenOverride atomic.Bool
+
 	// Window hidden state (background mode)
 	windowHidden bool
 }
@@ -359,6 +381,18 @@ func NewApp(debugModeFn func() bool, useDirectDBus bool) *App {
 		debugMode:     debugModeFn,
 		useDirectDBus: useDirectDBus,
 	}
+}
+
+// SetStartHiddenOverride forces the window to stay hidden at startup regardless
+// of the stored start_hidden setting.
+//
+// This is what the `--start-hidden` flag on the autostart entry uses: a
+// session-login start must never pop a window, even if the user later turned
+// the "start hidden" toggle off while leaving autostart enabled. Must be
+// called before Startup; the frontend reads it through
+// GetStartHiddenActive.
+func (a *App) SetStartHiddenOverride(hidden bool) {
+	a.startHiddenOverride.Store(hidden)
 }
 
 // StartupDialogInfo holds the user-facing dialog content for a startup
@@ -584,6 +618,7 @@ func (a *App) Startup(ctx context.Context) {
 	a.draftOps = draftOps{
 		accountStore:   a.accountStore,
 		folderStore:    a.folderStore,
+		staging:        draft.NewStagingStore(a.paths.AttachmentStagingPath()),
 		messageStore:   a.messageStore,
 		draftStore:     a.draftStore,
 		imapPool:       a.imapPool,
@@ -593,6 +628,18 @@ func (a *App) Startup(ctx context.Context) {
 		pgpSigner:      a.pgpSigner,
 		pgpEncryptor:   a.pgpEncryptor,
 		pgpDecryptor:   a.pgpDecryptor,
+	}
+
+	// Reclaim staged attachment blobs. This sweep is the ONLY reclaim path:
+	// ids are content-addressed, so two drafts holding identical bytes share one
+	// file and an eager delete on draft removal would strip the other draft's
+	// attachment. The reference check keeps anything a live draft still points
+	// at, so the age is only applied to genuinely unreachable blobs.
+	refChecker := draft.StagingReferencedChecker{Store: a.draftStore}
+	if removed, err := a.draftOps.staging.SweepOlderThan(draft.StagingRetention, refChecker.IsReferenced); err != nil {
+		log.Warn().Err(err).Msg("Failed to sweep stale attachment staging files")
+	} else if removed > 0 {
+		log.Info().Int("removed", removed).Msg("Removed stale staged attachments")
 	}
 
 	// Initialize sync engine
@@ -784,6 +831,9 @@ func (a *App) Startup(ctx context.Context) {
 	// Initialize sleep/wake monitor for auto-sync on wake
 	a.initSleepWakeMonitor(ctx)
 
+	// Initialize session lock monitor so lock-screen notifications stay redacted
+	a.initSessionLockMonitor(ctx)
+
 	// Initialize system theme monitor (XDG Settings Portal on Linux)
 	a.initThemeMonitor(ctx)
 
@@ -827,6 +877,14 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Initialize autostart manager
 	a.autostartMgr = platform.NewAutostartManager()
+
+	// Create the tray icon when the instance can be window-less (background
+	// mode or autostart), so a hidden instance is always recoverable.
+	a.startTray()
+
+	// Publish the unread count to the shell so the dock icon can show a badge
+	// (inert on stock GNOME, which has no badge API).
+	a.startLauncherBadge()
 
 	log.Info().Msg("Email Hub started successfully")
 }
@@ -951,6 +1009,11 @@ func (a *App) QuitApp() {
 // GetStartHiddenActive returns true if the window should remain hidden on startup.
 // True when both start_hidden and run_background settings are enabled.
 func (a *App) GetStartHiddenActive() bool {
+	// An explicit --start-hidden on the command line wins over the settings:
+	// the autostart entry must be able to force a window-less boot.
+	if a.startHiddenOverride.Load() {
+		return true
+	}
 	startHidden, _ := a.settingsStore.GetStartHidden()
 	if !startHidden {
 		return false
@@ -974,6 +1037,13 @@ func (a *App) InitiateShutdown() {
 // Shutdown is called when the app is closing
 func (a *App) Shutdown(ctx context.Context) {
 	log := logging.WithComponent("app")
+
+	// Drop the tray icon first so the shell does not keep a live indicator
+	// pointing at a process that is going away.
+	tray.Stop()
+
+	// Release the D-Bus objects the shell badge was published on.
+	a.stopLauncherBadge()
 
 	// Broadcast shutdown to all composer windows
 	if a.ipcServer != nil {
@@ -1009,6 +1079,15 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.sleepWakeMonitor != nil {
 		_ = a.sleepWakeMonitor.Stop()
 		log.Info().Msg("Sleep/wake monitor stopped")
+	}
+
+	// Stop session lock monitor
+	a.sessionLockMu.RLock()
+	sessionLock := a.sessionLock
+	a.sessionLockMu.RUnlock()
+	if sessionLock != nil {
+		_ = sessionLock.Stop()
+		log.Info().Msg("Session lock monitor stopped")
 	}
 
 	// Stop network monitor

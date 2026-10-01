@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-
-	gokeyring "github.com/zalando/go-keyring"
 )
 
 // Per-account custom OAuth provider config — the storage that makes "bring your own
@@ -64,15 +62,15 @@ func (s *Store) SetCustomOAuthProvider(accountID string, cfg CustomOAuthProvider
 		return fmt.Errorf("marshal custom oauth provider: %w", err)
 	}
 
-	if s.keyringEnabled {
-		kerr := gokeyring.Set(serviceName, customOAuthProviderKeyringPrefix+accountID, string(payload))
-		if kerr == nil {
-			s.log.Debug().Str("account_id", accountID).Msg("custom OAuth provider stored in OS keyring")
-			// Keyring is primary — clear any encrypted-DB copy.
-			s.clearCustomOAuthProviderDB(accountID)
-			return nil
-		}
-		s.log.Warn().Err(kerr).Str("account_id", accountID).Msg("Failed to store custom OAuth provider in OS keyring, falling back to encrypted database")
+	// Fail closed on a live keyring failure: the client secret inside this
+	// payload must not be silently relocated into the SQLite file.
+	if inKeyring, err := s.keyringSet(customOAuthProviderKeyringPrefix+accountID, string(payload)); err != nil {
+		return fmt.Errorf("custom OAuth provider not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("account_id", accountID).Msg("custom OAuth provider stored in OS keyring")
+		// Keyring is primary — clear any encrypted-DB copy.
+		s.clearCustomOAuthProviderDB(accountID)
+		return nil
 	}
 
 	if err := s.ensureCustomProvidersTable(); err != nil {
@@ -103,18 +101,16 @@ func (s *Store) GetCustomOAuthProvider(accountID string) (CustomOAuthProvider, b
 		return zero, false, nil
 	}
 
-	if s.keyringEnabled {
-		payload, kerr := gokeyring.Get(serviceName, customOAuthProviderKeyringPrefix+accountID)
-		if kerr == nil {
-			var cfg CustomOAuthProvider
-			if jerr := json.Unmarshal([]byte(payload), &cfg); jerr != nil {
-				return zero, false, fmt.Errorf("parse custom oauth provider from keyring: %w", jerr)
-			}
-			return cfg, true, nil
+	payload, found, kerr := s.keyringGet(customOAuthProviderKeyringPrefix + accountID)
+	if kerr != nil {
+		return zero, false, kerr
+	}
+	if found {
+		var cfg CustomOAuthProvider
+		if jerr := json.Unmarshal([]byte(payload), &cfg); jerr != nil {
+			return zero, false, fmt.Errorf("parse custom oauth provider from keyring: %w", jerr)
 		}
-		if kerr != gokeyring.ErrNotFound {
-			s.log.Warn().Err(kerr).Msg("Error reading custom OAuth provider from keyring, trying fallback")
-		}
+		return cfg, true, nil
 	}
 
 	if err := s.ensureCustomProvidersTable(); err != nil {
@@ -144,9 +140,7 @@ func (s *Store) GetCustomOAuthProvider(accountID string) (CustomOAuthProvider, b
 
 // DeleteCustomOAuthProvider removes any stored custom provider config. Idempotent.
 func (s *Store) DeleteCustomOAuthProvider(accountID string) error {
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, customOAuthProviderKeyringPrefix+accountID)
-	}
+	s.keyringDelete(customOAuthProviderKeyringPrefix + accountID)
 	s.clearCustomOAuthProviderDB(accountID)
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"net/mail"
 	"strings"
 
 	"github.com/beheoxinh/hsx2mail/internal/logging"
@@ -214,7 +215,9 @@ func (a *App) ProcessSMIMEMessage(messageID string) (*SMIMEViewResult, error) {
 	var sigResult *smime.SignatureResult
 	ct := extractContentType(innerBytes)
 	if smime.IsSMIMESigned(ct) {
-		sigResult, innerBytes = a.smimeVerifier.VerifyAndUnwrap(innerBytes)
+		// Bind verification to the claimed sender: a valid signature by a
+		// certificate belonging to somebody else is not a valid signature *here*.
+		sigResult, innerBytes = a.smimeVerifier.VerifyAndUnwrap(innerBytes, msg.FromEmail)
 		if innerBytes == nil {
 			// Verification unwrap failed, use the encrypted content as-is
 			innerBytes = rawBody
@@ -333,7 +336,9 @@ func (a *App) ProcessPGPMessage(messageID string) (*PGPViewResult, error) {
 	var sigResult *pgp.SignatureResult
 	ct := extractContentType(innerBytes)
 	if pgp.IsPGPSigned(ct) {
-		sigResult, innerBytes = a.pgpVerifier.VerifyAndUnwrap(innerBytes)
+		// Bind verification to the claimed sender: a valid signature by a key
+		// belonging to somebody else is not a valid signature *here*.
+		sigResult, innerBytes = a.pgpVerifier.VerifyAndUnwrap(innerBytes, msg.FromEmail)
 		if innerBytes == nil {
 			// Verification unwrap failed, use the encrypted content as-is
 			innerBytes = rawBody
@@ -427,4 +432,28 @@ func buildDecryptedAttachmentList(atts []*message.Attachment) []DecryptedAttachm
 		})
 	}
 	return result
+}
+
+// senderFromRaw extracts the From address from a raw message's headers. Used
+// where only the raw bytes are available (decrypted inner content) and the
+// stored message row is not in hand.
+func senderFromRaw(raw []byte) string {
+	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
+	if headerEnd == -1 {
+		headerEnd = bytes.Index(raw, []byte("\n\n"))
+		if headerEnd == -1 {
+			return ""
+		}
+	}
+	for _, line := range strings.Split(string(raw[:headerEnd]), "\n") {
+		name, value, ok := strings.Cut(strings.TrimRight(line, "\r"), ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "From") {
+			continue
+		}
+		if addr, err := mail.ParseAddress(strings.TrimSpace(value)); err == nil {
+			return addr.Address
+		}
+		return ""
+	}
+	return ""
 }

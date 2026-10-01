@@ -5,14 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
-	"github.com/emersion/go-imap/v2"
-	"github.com/emersion/go-imap/v2/imapclient"
 	imapPkg "github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
+
+// bodyFetchCounters tracks body-fetch progress. The heartbeat goroutine reads
+// these while the fetch loop writes them, so they must be atomic: plain ints
+// are a real data race that `go test -race` flags on any long fetch.
+type bodyFetchCounters struct {
+	fetched atomic.Int64
+	failed  atomic.Int64
+}
 
 // ProcessedBody holds the parsed body content and attachments for a message
 type ProcessedBody struct {
@@ -23,7 +32,7 @@ type ProcessedBody struct {
 	HasAttachments bool
 	Attachments    []*message.Attachment  // Extracted during parsing (no re-parse needed)
 	RawBytes       []byte                 // For on-demand attachment content fetch
-	SMIMEResult    *smime.SignatureResult  // S/MIME verification result
+	SMIMEResult    *smime.SignatureResult // S/MIME verification result
 	SMIMERawBody   []byte                 // Raw S/MIME body for on-view processing
 	SMIMEEncrypted bool                   // Whether the message is encrypted
 	PGPRawBody     []byte                 // Raw PGP body for on-view processing
@@ -316,10 +325,11 @@ const bodyTruncationThreshold = 0.8
 // skip the message.
 //
 // Decision table (all comparisons in bytes):
-//   reportedSize == 0          → charge   (no signal to defer on; treat as definitive)
-//   received    >= maxMsgSize  → charge   (Email Hub's own cap, not server truncation; next fetch hits same wall)
-//   received    <  reported*T  → DON'T    (clear shortfall; likely server-side truncation)
-//   otherwise                  → charge   (received is close enough to expected; the empty body is real)
+//
+//	reportedSize == 0          → charge   (no signal to defer on; treat as definitive)
+//	received    >= maxMsgSize  → charge   (Email Hub's own cap, not server truncation; next fetch hits same wall)
+//	received    <  reported*T  → DON'T    (clear shortfall; likely server-side truncation)
+//	otherwise                  → charge   (received is close enough to expected; the empty body is real)
 //
 // Kept as a pure function (no Engine receiver) so it can be unit-tested
 // against synthetic inputs without standing up a full sync engine.
@@ -335,18 +345,20 @@ func shouldChargeFailure(receivedBytes, reportedSize int64) bool {
 }
 
 // markUnresolvedAsFailed persists messages.body_failed=1 for any requested ID
-// whose body parsed to empty AND wasn't encrypted, OR whose UID the server
-// didn't return at all. Encrypted messages (which legitimately carry empty
-// plaintext until view-time decryption) are treated as resolved. The flag
-// excludes the message from future body-fetch queries via the body_failed=0
-// guard in GetMessagesWithoutBody/AndSize/Count (see migration v39).
+// that the server DID return but whose body parsed to empty without being
+// encrypted. Encrypted messages (which legitimately carry empty plaintext until
+// view-time decryption) are treated as resolved. The flag excludes the message
+// from future body-fetch queries via the body_failed=0 guard in
+// GetMessagesWithoutBody/AndSize/Count (see migration v39).
+//
+// Requested IDs the server never returned are deliberately NOT charged: the
+// flag is permanent with no TTL, so charging an expunged or transiently
+// missing UID would drop that body from every future fetch.
 //
 // sizes carries the per-message (received, reported) byte counts captured
 // during FETCH so shouldChargeFailure can defer marking when the response
-// was likely server-side truncation. IDs absent from sizes — typically
-// requested-but-not-returned — fall through to the "no signal" branch and
-// are charged (server returned nothing despite RFC822.SIZE being requested:
-// either a server bug or a persistent permission issue, both worth bounding).
+// was likely server-side truncation. An ID absent from sizes was never
+// returned by the server, so it is skipped entirely rather than charged.
 //
 // Without this persistence, the previous in-memory failedParseAttempts map
 // reset every sync cycle and re-fetched the same unparseable IDs forever.
@@ -374,10 +386,17 @@ func (e *Engine) markUnresolvedAsFailed(requestedIDs []string, updates []message
 		if resolved[id] {
 			continue
 		}
+		s, returned := sizes[id]
+		if !returned {
+			// The server never returned this UID at all (expunged mid-sync,
+			// truncated FETCH response, transient error). body_failed=1 is
+			// permanent — it excludes the message from every future body query
+			// — so charging it here loses the body for good. Leave it pending
+			// and let the next sync retry.
+			continue
+		}
 		// Defer marking when the response looks truncated — retrying next
-		// sync may succeed. shouldChargeFailure returns true when no size
-		// signal exists (id not in sizes map → zero values → reported=0).
-		s := sizes[id]
+		// sync may succeed.
 		if !shouldChargeFailure(s.received, s.reported) {
 			deferredCount++
 			continue
@@ -482,10 +501,15 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 	e.emitProgress(accountID, folderID, 0, totalWithoutBody, "bodies")
 
 	// Tracking for error recovery and progress
-	failedBatches := 0      // consecutive batch failures
+	failedBatches := 0 // consecutive batch failures
+	// emptyRespAttempts counts, per message, how many times the server answered a
+	// body FETCH with nothing at all for it. It bounds the retry loop for a
+	// server that returns zero bodies, without permanently flagging the message
+	// as body_failed (that flag has no TTL and would lose the body for good).
+	emptyRespAttempts := make(map[string]int)
+	failedWrites := 0       // consecutive body-write (DB) failures
 	connectionFailures := 0 // total connection recovery attempts
-	fetched := 0
-	failed := 0
+	var counters bodyFetchCounters
 
 	// Note: parse-failure tracking is persisted in messages.body_failed (v39).
 	// Once a fetch returns nothing usable for a message, MarkBodyFailed flags
@@ -520,9 +544,9 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 			select {
 			case <-ticker.C:
 				e.log.Info().
-					Int("fetched", fetched).
+					Int64("fetched", counters.fetched.Load()).
 					Int("total", totalWithoutBody).
-					Int("failed", failed).
+					Int64("failed", counters.failed.Load()).
 					Str("folder", f.Path).
 					Msg("Body fetch in progress (heartbeat)")
 			case <-heartbeatCtx.Done():
@@ -555,10 +579,22 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 				e.log.Debug().Int("count", len(result.bodyUpdates)).Msg("Applying batch DB update")
 				if err := e.messageStore.UpdateBodiesBatch(result.bodyUpdates); err != nil {
 					e.log.Warn().Err(err).Msg("Failed to batch update bodies")
-					failed += result.fetchedCount
+					counters.failed.Add(int64(result.fetchedCount))
+					// A failed write leaves the rows still body_fetched=0, so the
+					// next iteration re-selects the identical candidates and the
+					// loop spins forever against a broken DB. Count it like a
+					// fetch failure so the retry bound applies.
+					failedWrites++
+					if failedWrites > maxMessageRetries {
+						e.log.Error().Err(err).Int("failedWrites", failedWrites).
+							Msg("Too many consecutive body-write failures, aborting body fetch")
+						e.pool.Release(conn)
+						return fmt.Errorf("body write failed %d times: %w", failedWrites, err)
+					}
 				} else {
-					fetched += result.fetchedCount
-					e.log.Debug().Int("fetched", fetched).Int("total", totalWithoutBody).Msg("DB update successful")
+					counters.fetched.Add(int64(result.fetchedCount))
+					failedWrites = 0
+					e.log.Debug().Int64("fetched", counters.fetched.Load()).Int("total", totalWithoutBody).Msg("DB update successful")
 				}
 			} else {
 				e.log.Warn().Int("fetchedCount", result.fetchedCount).Msg("No body updates in result - bodies may be lost!")
@@ -571,8 +607,8 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 			}
 
 			// Emit progress after DB update completes
-			e.log.Debug().Int("fetched", fetched).Int("total", totalWithoutBody).Msg("Emitting progress")
-			e.emitProgress(accountID, folderID, fetched, totalWithoutBody, "bodies")
+			e.log.Debug().Int64("fetched", counters.fetched.Load()).Int("total", totalWithoutBody).Msg("Emitting progress")
+			e.emitProgress(accountID, folderID, int(counters.fetched.Load()), totalWithoutBody, "bodies")
 			pendingResultChan = nil
 		}
 
@@ -593,8 +629,8 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 
 		e.log.Debug().
 			Int("candidates", len(candidates)).
-			Int("fetched", fetched).
-			Int("failed", failed).
+			Int64("fetched", counters.fetched.Load()).
+			Int64("failed", counters.failed.Load()).
 			Msg("Queried candidates for next batch")
 
 		if len(candidates) == 0 {
@@ -615,7 +651,7 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 			batchMaxMessages = 25
 			batchMaxBytes = 256 * 1024 // 256KB
 			// Log only once (when we first enter the large mailbox mode)
-			if fetched == 0 && failed == 0 {
+			if counters.fetched.Load() == 0 && counters.failed.Load() == 0 {
 				e.log.Info().
 					Int("totalMessages", totalWithoutBody).
 					Int("batchMaxMessages", batchMaxMessages).
@@ -737,11 +773,37 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 		// next cycle would query and FETCH the same UIDs again.
 		if len(bodies) == 0 {
 			e.log.Warn().Int("requested", len(uidToMessageID)).Msg("IMAP returned no bodies for batch")
-			// No size signals here — server returned nothing, so every ID
-			// falls through to the "no signal" branch of shouldChargeFailure
-			// and gets charged. Pass nil to keep the call sites uniform.
-			e.markUnresolvedAsFailed(batchIDs, nil, nil)
-			failed += len(uidToMessageID)
+
+			// The server answered the FETCH but delivered no body for anything we
+			// asked for. Pass a synthesized size map so markUnresolvedAsFailed
+			// evaluates these IDs on their merits instead of treating them as
+			// "not returned" — and only escalate to the permanent body_failed
+			// flag once a message has been refused this many times, so a
+			// transient server fault cannot lose a body forever.
+			// Only IDs that have been refused this many times go into the map:
+			// markUnresolvedAsFailed charges exactly the IDs it is given, and
+			// leaving the others out keeps them in the next cycle's candidate
+			// query instead of losing their body permanently on one bad FETCH.
+			emptySizes := make(map[string]fetchedSize, len(batchIDs))
+			exhausted := 0
+			for _, id := range batchIDs {
+				emptyRespAttempts[id]++
+				if emptyRespAttempts[id] > maxMessageRetries {
+					emptySizes[id] = fetchedSize{}
+					exhausted++
+				}
+			}
+			if exhausted > 0 {
+				e.log.Warn().
+					Int("exhausted", exhausted).
+					Int("attempts", maxMessageRetries).
+					Msg("Server persistently returned no body; marking exhausted messages as failed")
+			}
+			e.markUnresolvedAsFailed(batchIDs, nil, emptySizes)
+			// Only the exhausted messages are actually flagged; the rest stay
+			// pending and will be retried, so counting all of them as failed
+			// would report progress the database does not reflect.
+			counters.failed.Add(int64(exhausted))
 			continue
 		}
 
@@ -811,9 +873,9 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 		if len(result.bodyUpdates) > 0 {
 			if err := e.messageStore.UpdateBodiesBatch(result.bodyUpdates); err != nil {
 				e.log.Warn().Err(err).Msg("Failed to batch update bodies (final)")
-				failed += result.fetchedCount
+				counters.failed.Add(int64(result.fetchedCount))
 			} else {
-				fetched += result.fetchedCount
+				counters.fetched.Add(int64(result.fetchedCount))
 			}
 		}
 		if len(result.attachments) > 0 {
@@ -822,22 +884,22 @@ func (e *Engine) FetchBodiesInBackground(ctx context.Context, accountID, folderI
 			}
 		}
 
-		e.emitProgress(accountID, folderID, fetched, totalWithoutBody, "bodies")
+		e.emitProgress(accountID, folderID, int(counters.fetched.Load()), totalWithoutBody, "bodies")
 	}
 
 	// Release connection when done
 	e.pool.Release(conn)
 
 	// Log summary
-	if failed > 0 {
+	if counters.failed.Load() > 0 {
 		e.log.Info().
-			Int("fetched", fetched).
-			Int("failed", failed).
+			Int64("fetched", counters.fetched.Load()).
+			Int64("failed", counters.failed.Load()).
 			Int("total", totalWithoutBody).
 			Msg("Body fetch complete with failures (hybrid batch mode)")
 	} else {
 		e.log.Info().
-			Int("fetched", fetched).
+			Int64("fetched", counters.fetched.Load()).
 			Int("total", totalWithoutBody).
 			Msg("Body fetch complete (hybrid batch mode)")
 	}
@@ -974,4 +1036,3 @@ func (e *Engine) buildMessageFromStreamedData(accountID, folderID string, uid im
 
 	return m
 }
-

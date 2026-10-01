@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/beheoxinh/hsx2mail/internal/crypto"
 	"github.com/rs/zerolog"
 )
 
@@ -29,7 +30,12 @@ func NewVerifier(store *Store, log zerolog.Logger) *Verifier {
 // VerifyAndUnwrap detects PGP/MIME signed content, verifies the signature,
 // caches the sender key, and returns the verification result plus the
 // unwrapped inner body. If the message is not PGP signed, returns (nil, nil).
-func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
+//
+// senderEmail is the message From address. A signature that verifies but was
+// made by a key belonging to somebody else is reported as
+// StatusSignerMismatch, not StatusSigned: the bytes are authentic, but they are
+// not authentic *from this sender*.
+func (v *Verifier) VerifyAndUnwrap(raw []byte, senderEmail string) (*SignatureResult, []byte) {
 	// Parse the message to find Content-Type
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	if headerEnd == -1 {
@@ -60,11 +66,11 @@ func (v *Verifier) VerifyAndUnwrap(raw []byte) (*SignatureResult, []byte) {
 		return nil, nil
 	}
 
-	return v.verifyMultipartSigned(raw, params)
+	return v.verifyMultipartSigned(raw, params, senderEmail)
 }
 
 // verifyMultipartSigned handles PGP/MIME signed messages (multipart/signed)
-func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string) (*SignatureResult, []byte) {
+func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string, senderEmail string) (*SignatureResult, []byte) {
 	boundary := params["boundary"]
 	if boundary == "" {
 		return &SignatureResult{
@@ -189,6 +195,23 @@ func (v *Verifier) verifyMultipartSigned(raw []byte, params map[string]string) (
 	// Signature verified — extract signer info
 	signerEmail := ExtractEmailFromKey(signer)
 	signerKeyID := fmt.Sprintf("%016X", signer.PrimaryKey.KeyId)
+
+	// Bind the identity to the message sender. Verified-by-wrong-key is not
+	// verified: reporting StatusSigned here is what let any key in the keyring
+	// vouch for any sender.
+	if !crypto.SignerMatchesSender(signerEmail, senderEmail) {
+		v.log.Warn().
+			Str("signer", signerEmail).
+			Str("from", senderEmail).
+			Str("key_id", signerKeyID).
+			Msg("PGP signature verified but the signing key is not the message sender")
+		return &SignatureResult{
+			Status:       StatusSignerMismatch,
+			SignerEmail:  signerEmail,
+			SignerKeyID:  signerKeyID,
+			ErrorMessage: fmt.Sprintf("signature is from %s, not %s", signerEmail, senderEmail),
+		}, signedContent
+	}
 
 	// Cache the sender's public key
 	v.cacheSenderKey(signer, signerEmail)

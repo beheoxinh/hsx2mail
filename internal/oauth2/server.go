@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"sync"
@@ -162,6 +163,10 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 
 	// Respond to browser
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Callback pages are static apart from the two escaped error fields below.
+	// A CSP with script-src 'none' keeps a future injection bug from being
+	// exploitable; the pages only use an inline <style> block.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 
 	if result.Error != "" {
 		s.log.Warn().
@@ -169,19 +174,20 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 			Str("description", result.ErrorDescription).
 			Msg("OAuth callback received error")
 
+		// `error` / `error_description` come straight from the query string,
+		// which any local page can navigate to. Escape before interpolating.
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, errorPageHTML, result.Error, result.ErrorDescription)
+		fmt.Fprintf(w, errorPageHTML, html.EscapeString(result.Error), html.EscapeString(result.ErrorDescription))
 		return
 	}
 
-	s.log.Debug().Msg("OAuth callback received authorization code")
-	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, successPageHTML)
 }
 
 // handleRoot handles requests to the root path (redirect to callback info)
 func (s *CallbackServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 	fmt.Fprint(w, waitingPageHTML)
 }
 

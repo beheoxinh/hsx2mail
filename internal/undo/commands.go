@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/emersion/go-imap/v2"
 	imapPkg "github.com/beheoxinh/hsx2mail/internal/imap"
+	"github.com/emersion/go-imap/v2"
 )
 
 // UndoContext provides dependencies for undo operations
@@ -167,4 +167,44 @@ func (c *MoveCommand) Undo() error {
 
 	// Reuse the full move pipeline (IMAP + local DB + events)
 	return c.undoCtx.MoveMessagesToFolder(localMsgIDs, c.sourceFolderID)
+}
+
+// MultiMoveCommand undoes a move that spanned several source accounts.
+//
+// It exists because a cross-account move fans out into one operation per
+// account. Pushing one MoveCommand per partition made a single bulk action
+// require N presses of Undo, and only the first press did what the user
+// expected. This reverses every partition as one step, and reports the first
+// failure while still attempting the rest so a partial server error does not
+// leave the remaining accounts moved.
+type MultiMoveCommand struct {
+	BaseCommand
+	undoCtx UndoContext
+	moves   []MoveCommand
+}
+
+// NewMultiMoveCommand creates one undo entry covering every partition.
+func NewMultiMoveCommand(moves []MoveCommand, description string) *MultiMoveCommand {
+	return &MultiMoveCommand{
+		BaseCommand: NewBaseCommand(description),
+		undoCtx:     moves[0].undoCtx,
+		moves:       append([]MoveCommand(nil), moves...),
+	}
+}
+
+// Execute is a no-op: the move has already happened by the time the command
+// is pushed onto the stack.
+func (c *MultiMoveCommand) Execute() error { return nil }
+
+// Undo moves every partition back to its source folder.
+func (c *MultiMoveCommand) Undo() error {
+	var firstErr error
+	for i := range c.moves {
+		if err := c.moves[i].Undo(); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to undo move to %s: %w", c.moves[i].destFolderID, err)
+			}
+		}
+	}
+	return firstErr
 }

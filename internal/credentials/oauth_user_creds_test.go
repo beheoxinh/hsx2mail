@@ -24,7 +24,8 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatalf("NewStore: %v", err)
 	}
 	// Tests run without OS keyring access — verify DB fallback path explicitly.
-	store.keyringEnabled = false
+	// Force DB-only mode: these unit tests must not touch the host keyring.
+	keyringLive.Store(false)
 	return store
 }
 

@@ -84,14 +84,14 @@ func (a *App) enabledExtensionSet() (map[string]bool, error) {
 // ExtensionInfo is the row shape returned by ListExtensions — manifest fields
 // plus the current enable state. Wails-friendly (all primitive/slice types).
 type ExtensionInfo struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Version          string   `json:"version"`
-	Description      string   `json:"description"`
-	Author           string   `json:"author"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	Version            string   `json:"version"`
+	Description        string   `json:"description"`
+	Author             string   `json:"author"`
 	MinHsx2MailVersion string   `json:"minHsx2MailVersion"`
-	Capabilities     []string `json:"capabilities"`
-	Enabled          bool     `json:"enabled"`
+	Capabilities       []string `json:"capabilities"`
+	Enabled            bool     `json:"enabled"`
 }
 
 // ListExtensions returns the full extension listing for the Settings UI.
@@ -109,14 +109,14 @@ func (a *App) ListExtensions() ([]ExtensionInfo, error) {
 			return nil, err
 		}
 		out = append(out, ExtensionInfo{
-			ID:               m.ID,
-			Name:             m.Name,
-			Version:          m.Version,
-			Description:      m.Description,
-			Author:           m.Author,
+			ID:                 m.ID,
+			Name:               m.Name,
+			Version:            m.Version,
+			Description:        m.Description,
+			Author:             m.Author,
 			MinHsx2MailVersion: m.MinHsx2MailVersion,
-			Capabilities:     m.Capabilities,
-			Enabled:          enabled,
+			Capabilities:       m.Capabilities,
+			Enabled:            enabled,
 		})
 	}
 	return out, nil

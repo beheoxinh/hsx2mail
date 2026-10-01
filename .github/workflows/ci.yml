@@ -1,0 +1,211 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.0"
+  NODE_VERSION: "24"
+
+jobs:
+  go:
+    name: Go build, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      # The DSN uses _txlock=immediate, so a transaction that only reads would
+      # hold SQLite's global write lock and stall every other writer.
+      - name: No read-only transactions
+        run: go run ./tools/db/txcheck
+
+      - name: Test (race, core packages)
+        run: go test -race -count=1 ./internal/sync/... ./internal/imap/... ./internal/message/... ./internal/database/... ./app/...
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  frontend:
+    name: Frontend lint + type check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: svelte-check
+        run: npm run check
+
+      # Covers the virtualized message list: window reconciliation, row-index
+      # resolution and the DOM-visible effect of windowing.
+      - name: Frontend tests
+        run: npm run test
+
+      - name: Offline icon coverage
+        run: node scripts/check-offline-icons.mjs
+
+      # Unused deps/files/exports. Clean today; `frontend/knip.json` documents
+      # the shapes that produce false positives here.
+      - name: knip (unused deps/exports)
+        run: npm run knip
+
+  smoke:
+    name: Smoke test (real binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             libgtk-3-dev libwebkit2gtk-4.1-dev             xvfb sqlite3 desktop-file-utils
+
+      - name: Frontend install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build the real binary
+        run: ./build.sh --skip-tests
+
+      # Proves the built artifact starts, migrates and shuts down — the class of
+      # breakage unit tests cannot catch (wrong WebKitGTK, bad data dir).
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh
+
+      - name: Upload app log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-log
+          path: /tmp/tmp.*/app.log
+          if-no-files-found: ignore
+
+  desktop:
+    name: Desktop entry + Flatpak manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate .desktop entries
+        run: |
+          status=0
+          for f in $(find build -name '*.desktop'); do
+            echo "::group::$f"
+            desktop-file-validate "$f" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+      - name: Validate Flatpak manifest YAML
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = False
+          for f in glob.glob("build/flatpak/**/*.yml", recursive=True):
+              try:
+                  doc = yaml.safe_load(open(f, encoding="utf-8"))
+              except Exception as exc:
+                  print(f"::error file={f}::{exc}")
+                  bad = True
+                  continue
+              if not isinstance(doc, dict):
+                  print(f"::error file={f}::manifest is not a mapping")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Check manifest invariants
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          doc = yaml.safe_load(open(
+              "build/flatpak/flathub/io.github.beheoxinh.Hsx2Mail.yml",
+              encoding="utf-8"))
+          sources = doc["modules"][0]["sources"]
+          problems = []
+          if not any(s.get("type") == "dir" for s in sources):
+              problems.append("no `type: dir` source: the build has no source tree")
+          vendored = [s for s in sources if str(s.get("dest", "")).startswith("vendor")]
+          if not vendored:
+              problems.append(
+                  "no vendored Go sources inlined: `go build -mod=vendor` would fail")
+          if not any("flatpak-node/npm-cache" in str(s.get("dest", "")) for s in sources):
+              problems.append("no npm cacache inlined: offline `npm install` would fail")
+          args = doc.get("finish-args", [])
+          for required in ("--talk-name=org.freedesktop.portal.Desktop",
+                           "--talk-name=org.freedesktop.Notifications"):
+              if required not in args:
+                  problems.append(f"missing finish-arg {required}")
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: Regenerate manifest sources is idempotent
+        run: |
+          python3 build/flatpak/flathub/inline-sources.py
+          git diff --exit-code -- build/flatpak/flathub/io.github.beheoxinh.Hsx2Mail.yml

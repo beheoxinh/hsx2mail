@@ -167,11 +167,6 @@ export function setUnifiedInboxExpanded(expanded: boolean): void {
   saveUIState({ unifiedInboxExpanded: expanded })
 }
 
-// Helper to check if a folder is collapsed (defaults to true/collapsed if not set)
-export function isFolderCollapsed(folderId: string): boolean {
-  return currentState.collapsedFolders[folderId] !== false
-}
-
 // Helper to set folder collapsed state
 export function setFolderCollapsed(folderId: string, collapsed: boolean): void {
   const newCollapsedFolders = { ...currentState.collapsedFolders, [folderId]: collapsed }

@@ -34,6 +34,10 @@ var (
 	mailtoFlag  = flag.String("mailto", "", "Mailto URL to open in composer (detached mode)")
 	dbusNotify  = flag.Bool("dbus-notify", false, "Use direct D-Bus notifications instead of portal (Linux only)")
 	versionFlag = flag.Bool("version", false, "Show version and exit")
+	// startHidden forces a window-less boot, overriding the stored settings.
+	// Emitted into the autostart .desktop entry so a session login never pops
+	// a window in the user's face (Phase 3 tasks 3-04/3-05).
+	startHidden = flag.Bool("start-hidden", false, "Start in background without showing the window")
 )
 
 // DebugMode returns whether debug logging is enabled
@@ -104,6 +108,7 @@ func runMainMode(mailtoData *app.MailtoData, rawMailtoArg string) {
 	// Create an instance of the app structure
 	application := app.NewApp(DebugMode, *dbusNotify)
 	application.SingleInstanceLock = lock
+	application.SetStartHiddenOverride(*startHidden)
 
 	// Store mailto data if provided (will be used after startup)
 	if mailtoData != nil {

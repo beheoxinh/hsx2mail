@@ -3,45 +3,79 @@
  *
  * This cache avoids redundant API calls when switching between messages.
  * The backend already stores inline attachment content in SQLite for offline access,
- * but this frontend cache prevents unnecessary round-trips when revisiting messages.
+ * but this frontend cache prevents unnecessary round-trips.
  *
- * Cache is unlimited (no eviction) - grows throughout the session.
- * Memory is released when the app is closed/refreshed.
+ * **LRU cache with byte budget** - prevents unbounded memory growth when viewing
+ * many image-heavy emails. Cache is automatically cleared when the viewer changes.
  */
 
-// Map of messageId -> Record<contentId, dataUrl>
-const cache = new Map<string, Record<string, string>>()
+interface CacheEntry {
+  data: Record<string, string>
+  size: number
+  lastAccess: number
+}
+
+// Byte budget: 50MB max cache size
+const MAX_CACHE_BYTES = 50 * 1024 * 1024
+
+const cache = new Map<string, CacheEntry>()
+let currentBytes = 0
 
 /**
  * Get cached inline attachments for a message
- * @param messageId The message ID to look up
- * @returns The cached data URL map, or null if not cached
  */
-export function getCached(messageId: string): Record<string, string> | null {
-  return cache.get(messageId) ?? null
+export function getCached(id: string): Record<string, string> | undefined {
+  const entry = cache.get(id)
+  if (entry) {
+    entry.lastAccess = Date.now()
+    return entry.data
+  }
+  return undefined
 }
 
 /**
- * Store inline attachments in the cache
- * @param messageId The message ID to cache for
- * @param data The content-id to data URL map
+ * Store inline attachments in cache with LRU eviction
  */
-export function setCache(messageId: string, data: Record<string, string>): void {
-  cache.set(messageId, data)
+export function setCache(id: string, data: Record<string, string>): void {
+  const size = JSON.stringify(data).length
+  const key = id
+
+  // Evict entries if adding this would exceed budget
+  if (currentBytes + size > MAX_CACHE_BYTES) {
+    evictEntries(size)
+  }
+
+  // Replacing an existing entry must subtract its old size first, otherwise
+  // currentBytes inflates on every re-set of the same key and the budget stops
+  // evicting anything.
+  const previous = cache.get(key)
+  if (previous) {
+    currentBytes -= previous.size
+  }
+  cache.set(key, { data, size, lastAccess: Date.now() })
+  currentBytes += size
 }
 
 /**
- * Clear the entire cache
- * Can be used for memory management if needed
+ * Evict LRU entries to make room for new data
+ */
+function evictEntries(newSize: number): void {
+  const entries = Array.from(cache.entries()).sort((a, b) => a[1].lastAccess - b[1].lastAccess)
+  let freed = 0
+
+  for (const [key, entry] of entries) {
+    if (currentBytes + newSize - freed <= MAX_CACHE_BYTES) break
+    cache.delete(key)
+    freed += entry.size
+  }
+  currentBytes -= freed
+}
+
+/**
+ * Clear all cached inline attachments
+ * Called when the message viewer changes
  */
 export function clearCache(): void {
   cache.clear()
-}
-
-/**
- * Get the current cache size (number of messages cached)
- * Useful for debugging
- */
-export function getCacheSize(): number {
-  return cache.size
+  currentBytes = 0
 }

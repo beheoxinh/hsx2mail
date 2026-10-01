@@ -5,14 +5,15 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net/mail"
 	"strings"
 	"time"
 
-	gomessage "github.com/emersion/go-message"
 	"github.com/beheoxinh/hsx2mail/internal/email"
 	"github.com/beheoxinh/hsx2mail/internal/message"
 	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
+	gomessage "github.com/emersion/go-message"
 )
 
 // maxConsecutiveNextPartErrors bounds the skip-and-continue recovery in
@@ -93,7 +94,7 @@ func (e *Engine) parseMessageBodyInternal(raw []byte, messageID string) *ParsedB
 
 		// Signed-only: still parse body for FTS, but don't cache verification status
 		if e.smimeVerifier != nil {
-			_, innerBody := e.smimeVerifier.VerifyAndUnwrap(raw)
+			_, innerBody := e.smimeVerifier.VerifyAndUnwrap(raw, senderAddressFromRaw(raw))
 			// Use the unwrapped inner body for parsing (not the S/MIME wrapper)
 			if innerBody != nil {
 				raw = innerBody
@@ -126,7 +127,7 @@ func (e *Engine) parseMessageBodyInternal(raw []byte, messageID string) *ParsedB
 
 		// Signed-only: still parse body for FTS, but don't cache verification status
 		if e.pgpVerifier != nil {
-			_, innerBody := e.pgpVerifier.VerifyAndUnwrap(raw)
+			_, innerBody := e.pgpVerifier.VerifyAndUnwrap(raw, senderAddressFromRaw(raw))
 			// Use the unwrapped inner body for parsing (not the PGP wrapper)
 			if innerBody != nil {
 				raw = innerBody
@@ -829,3 +830,27 @@ func (e *Engine) parseMessageBodyWithTimeout(raw []byte, timeout time.Duration) 
 	return result.BodyText, result.BodyHTML, result.HasAttachments
 }
 */
+
+// senderAddressFromRaw extracts the From address from a raw message's headers.
+// Used to bind signature verification to the claimed sender on the parse path.
+func senderAddressFromRaw(raw []byte) string {
+	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
+	if headerEnd == -1 {
+		headerEnd = bytes.Index(raw, []byte("\n\n"))
+		if headerEnd == -1 {
+			return ""
+		}
+	}
+	for _, line := range strings.Split(string(raw[:headerEnd]), "\n") {
+		line = strings.TrimRight(line, "\r")
+		name, value, ok := strings.Cut(line, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "From") {
+			continue
+		}
+		if addr, err := mail.ParseAddress(strings.TrimSpace(value)); err == nil {
+			return addr.Address
+		}
+		return ""
+	}
+	return ""
+}

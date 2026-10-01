@@ -2,12 +2,13 @@ package draft
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/beheoxinh/hsx2mail/internal/database"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -105,6 +106,85 @@ func (s *Store) Update(d *Draft) error {
 		Str("id", d.ID).
 		Str("sync_status", string(d.SyncStatus)).
 		Msg("Updated draft")
+
+	return nil
+}
+
+// ErrDraftConflict is returned by UpdateContent when the row was modified by
+// another process between the caller's read and its write.
+var ErrDraftConflict = errors.New("draft was modified by another window")
+
+// UpdateContent writes only the editable content columns of a draft and leaves
+// the IMAP sync bookkeeping (sync_status, imap_uid, folder_id, last_sync_attempt,
+// sync_error) untouched.
+//
+// Autosave must use this, not Update: the in-memory Draft was read at the start
+// of the save, so a concurrent background syncToIMAP that just recorded the new
+// server-side UID would be rolled back to the stale in-memory value, orphaning
+// the server draft and making every later sync append another copy.
+func (s *Store) UpdateContent(d *Draft, previousUpdatedAt time.Time) error {
+	d.UpdatedAt = time.Now()
+
+	// Optimistic-concurrency check, done in Go rather than in SQL.
+	//
+	// Two alternatives were rejected:
+	//   - strftime/julianday on updated_at: SQLite's date functions return NULL
+	//     for a column whose declared type has NUMERIC affinity, and this
+	//     column is DATETIME, so the predicate is never true.
+	//   - `WHERE id = ? AND updated_at = ?` in the UPDATE: the stored value is
+	//     text carrying the *writer's* UTC offset, so a main window and a
+	//     detached composer launched under different TZ produce different text
+	//     for the same instant and every save would report a false conflict.
+	// Comparing the two timestamps as time.Time is offset-independent.
+	//
+	// Residual race: a writer that commits between this read and the UPDATE is
+	// not rejected, and simply wins. That is the same outcome as the guard
+	// firing, and the window is sub-millisecond between two independent
+	// processes — the real conflict (a save that started before another window
+	// finished one) is caught.
+	var currentUpdatedAt time.Time
+	if err := s.db.QueryRow(`SELECT updated_at FROM drafts WHERE id = ?`, d.ID).Scan(&currentUpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrDraftConflict
+		}
+		return fmt.Errorf("failed to read draft freshness: %w", err)
+	}
+	if currentUpdatedAt.After(previousUpdatedAt) {
+		return ErrDraftConflict
+	}
+
+	query := `
+		UPDATE drafts SET
+			to_list = ?, cc_list = ?, bcc_list = ?, subject = ?,
+			body_html = ?, body_text = ?, in_reply_to_id = ?, reply_type = ?,
+			references_list = ?, identity_id = ?, sign_message = ?,
+			encrypted = ?, encrypted_body = ?,
+			pgp_sign_message = ?, pgp_encrypted = ?, pgp_encrypted_body = ?,
+			attachments_data = ?, updated_at = ?
+		WHERE id = ?
+	`
+	res, err := s.db.Exec(query,
+		nullString(d.ToList), nullString(d.CcList), nullString(d.BccList), d.Subject,
+		nullString(d.BodyHTML), nullString(d.BodyText),
+		nullString(d.InReplyToID), nullString(d.ReplyType),
+		nullString(d.ReferencesList), nullString(d.IdentityID), d.SignMessage,
+		d.Encrypted, nullBytes(d.EncryptedBody),
+		d.PGPSignMessage, d.PGPEncrypted, nullBytes(d.PGPEncryptedBody),
+		nullBytes(d.AttachmentsData),
+		d.UpdatedAt,
+		d.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update draft content: %w", err)
+	}
+	if affected, aerr := res.RowsAffected(); aerr == nil && affected == 0 {
+		// The row disappeared between the freshness read and this write.
+		return ErrDraftConflict
+	}
+
+	s.log.Debug().
+		Str("id", d.ID).
+		Msg("Updated draft content (sync columns preserved)")
 
 	return nil
 }

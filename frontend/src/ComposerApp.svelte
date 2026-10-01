@@ -3,6 +3,11 @@
   import './lib/iconify-offline'
 
   import { onMount, onDestroy } from 'svelte'
+
+  // Component-scope so onDestroy can reach them; declared inside onMount they were
+  // out of scope there and the unsubscribes never ran.
+  let unsubscribeThemeChanged: (() => void) | null = null
+  let unsubscribeAppShutdown: (() => void) | null = null
   import Icon from '@iconify/svelte'
   import Composer from './lib/components/composer/Composer.svelte'
   import ToastContainer from './lib/components/ui/toast/ToastContainer.svelte'
@@ -17,7 +22,7 @@
   // @ts-ignore - wailsjs imports
   import { smtp, app } from '../wailsjs/go/models'
   // @ts-ignore - wailsjs runtime
-  import { WindowMinimise, WindowToggleMaximise, WindowShow, WindowSetTitle, EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+  import { WindowMinimise, WindowToggleMaximise, WindowShow, WindowSetTitle, EventsOn } from '../wailsjs/runtime/runtime'
 
   // Compose mode info from backend
   let composeMode = $state<app.ComposeMode | null>(null)
@@ -89,12 +94,12 @@
     RefreshWindowConstraints()
 
     // Listen for theme changes from main window via IPC
-    EventsOn('theme:changed', (newTheme: string) => {
+    unsubscribeThemeChanged = EventsOn('theme:changed', (newTheme: string) => {
       handleThemeChanged(newTheme)
     })
 
     // Listen for shutdown request from main window
-    EventsOn('app:shutdown', (_reason: string) => {
+    unsubscribeAppShutdown = EventsOn('app:shutdown', (_reason: string) => {
       addToast({
         type: 'info',
         message: $_('toast.mainWindowClosing'),
@@ -139,8 +144,8 @@
   })
 
   onDestroy(() => {
-    EventsOff('theme:changed')
-    EventsOff('app:shutdown')
+    unsubscribeThemeChanged?.()
+    unsubscribeAppShutdown?.()
   })
 
   // Window control functions

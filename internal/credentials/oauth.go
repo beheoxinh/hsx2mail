@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/beheoxinh/hsx2mail/internal/oauth2"
-	gokeyring "github.com/zalando/go-keyring"
 )
 
 // OAuthTokens represents OAuth2 tokens and metadata for an account
@@ -18,7 +17,6 @@ type OAuthTokens struct {
 	ExpiresAt    time.Time `json:"expiresAt"`    // Stored in DB
 	Scopes       []string  `json:"scopes"`       // Stored in DB
 }
-
 
 // IsExpired returns true if the access token has expired
 func (t *OAuthTokens) IsExpired() bool {
@@ -151,10 +149,8 @@ func (s *Store) GetOAuthTokens(accountID string) (*OAuthTokens, error) {
 // DeleteOAuthTokens removes all OAuth data for an account
 func (s *Store) DeleteOAuthTokens(accountID string) error {
 	// Delete from keyring
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, accountID+":access_token")
-		_ = gokeyring.Delete(serviceName, accountID+":refresh_token")
-	}
+	s.keyringDelete(accountID + ":access_token")
+	s.keyringDelete(accountID + ":refresh_token")
 
 	// Clear encrypted fallback storage
 	_, _ = s.db.Exec(`
@@ -243,15 +239,14 @@ func (s *Store) setOAuthAccessToken(accountID, token string) error {
 		return nil
 	}
 
-	// Try OS keyring first
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, accountID+":access_token", token)
-		if err == nil {
-			// Clear fallback storage
-			_, _ = s.db.Exec("UPDATE accounts SET encrypted_access_token = NULL WHERE id = ?", accountID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store access token in keyring, using fallback")
+	// Try OS keyring first. Fail closed on a runtime keyring failure: the
+	// access token must not be silently relocated into the SQLite file.
+	if inKeyring, err := s.keyringSet(accountID+":access_token", token); err != nil {
+		return fmt.Errorf("access token not stored: %w", err)
+	} else if inKeyring {
+		// Clear fallback storage
+		_, _ = s.db.Exec("UPDATE accounts SET encrypted_access_token = NULL WHERE id = ?", accountID)
+		return nil
 	}
 
 	// Fallback to encrypted database
@@ -269,15 +264,12 @@ func (s *Store) setOAuthAccessToken(accountID, token string) error {
 
 // getOAuthAccessToken retrieves the access token from keyring or encrypted DB
 func (s *Store) getOAuthAccessToken(accountID string) (string, error) {
-	// Try OS keyring first
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, accountID+":access_token")
-		if err == nil {
-			return token, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading access token from keyring, trying fallback")
-		}
+	// Try OS keyring first. A live-but-erroring keyring is surfaced rather than
+	// silently answered from the DB copy.
+	if token, found, err := s.keyringGet(accountID + ":access_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 
 	// Try fallback encrypted database
@@ -303,15 +295,14 @@ func (s *Store) setOAuthRefreshToken(accountID, token string) error {
 		return nil
 	}
 
-	// Try OS keyring first
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, accountID+":refresh_token", token)
-		if err == nil {
-			// Clear fallback storage
-			_, _ = s.db.Exec("UPDATE accounts SET encrypted_refresh_token = NULL WHERE id = ?", accountID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store refresh token in keyring, using fallback")
+	// Try OS keyring first. Fail closed: a lost refresh token means a forced
+	// re-consent, so it must not be hidden behind a DB write either.
+	if inKeyring, err := s.keyringSet(accountID+":refresh_token", token); err != nil {
+		return fmt.Errorf("refresh token not stored: %w", err)
+	} else if inKeyring {
+		// Clear fallback storage
+		_, _ = s.db.Exec("UPDATE accounts SET encrypted_refresh_token = NULL WHERE id = ?", accountID)
+		return nil
 	}
 
 	// Fallback to encrypted database
@@ -329,15 +320,12 @@ func (s *Store) setOAuthRefreshToken(accountID, token string) error {
 
 // getOAuthRefreshToken retrieves the refresh token from keyring or encrypted DB
 func (s *Store) getOAuthRefreshToken(accountID string) (string, error) {
-	// Try OS keyring first
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, accountID+":refresh_token")
-		if err == nil {
-			return token, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading refresh token from keyring, trying fallback")
-		}
+	// Try OS keyring first. A live-but-erroring keyring is surfaced rather than
+	// silently answered from the DB copy.
+	if token, found, err := s.keyringGet(accountID + ":refresh_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 
 	// Try fallback encrypted database
@@ -473,10 +461,8 @@ func (s *Store) GetContactSourceOAuthTokens(sourceID string) (*OAuthTokens, erro
 // DeleteContactSourceOAuthTokens removes all OAuth data for a standalone contact source
 func (s *Store) DeleteContactSourceOAuthTokens(sourceID string) error {
 	// Delete from keyring
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, "contact_source:"+sourceID+":access_token")
-		_ = gokeyring.Delete(serviceName, "contact_source:"+sourceID+":refresh_token")
-	}
+	s.keyringDelete("contact_source:" + sourceID + ":access_token")
+	s.keyringDelete("contact_source:" + sourceID + ":refresh_token")
 
 	// Clear encrypted fallback storage
 	_, _ = s.db.Exec(`
@@ -538,15 +524,13 @@ func (s *Store) setContactSourceAccessToken(sourceID, token string) error {
 		return nil
 	}
 
-	// Try OS keyring first
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, "contact_source:"+sourceID+":access_token", token)
-		if err == nil {
-			// Clear fallback storage
-			_, _ = s.db.Exec("UPDATE contact_sources SET encrypted_access_token = NULL WHERE id = ?", sourceID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store contact source access token in keyring, using fallback")
+	// Try OS keyring first; fail closed rather than fall back silently.
+	if inKeyring, err := s.keyringSet("contact_source:"+sourceID+":access_token", token); err != nil {
+		return fmt.Errorf("contact source access token not stored: %w", err)
+	} else if inKeyring {
+		// Clear fallback storage
+		_, _ = s.db.Exec("UPDATE contact_sources SET encrypted_access_token = NULL WHERE id = ?", sourceID)
+		return nil
 	}
 
 	// Fallback to encrypted database
@@ -564,15 +548,12 @@ func (s *Store) setContactSourceAccessToken(sourceID, token string) error {
 
 // getContactSourceAccessToken retrieves the access token from keyring or encrypted DB
 func (s *Store) getContactSourceAccessToken(sourceID string) (string, error) {
-	// Try OS keyring first
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, "contact_source:"+sourceID+":access_token")
-		if err == nil {
-			return token, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading contact source access token from keyring, trying fallback")
-		}
+	// Try OS keyring first; surface a live keyring failure instead of
+	// silently answering from the DB copy.
+	if token, found, err := s.keyringGet("contact_source:" + sourceID + ":access_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 
 	// Try fallback encrypted database
@@ -598,15 +579,13 @@ func (s *Store) setContactSourceRefreshToken(sourceID, token string) error {
 		return nil
 	}
 
-	// Try OS keyring first
-	if s.keyringEnabled {
-		err := gokeyring.Set(serviceName, "contact_source:"+sourceID+":refresh_token", token)
-		if err == nil {
-			// Clear fallback storage
-			_, _ = s.db.Exec("UPDATE contact_sources SET encrypted_refresh_token = NULL WHERE id = ?", sourceID)
-			return nil
-		}
-		s.log.Warn().Err(err).Msg("Failed to store contact source refresh token in keyring, using fallback")
+	// Try OS keyring first; fail closed rather than fall back silently.
+	if inKeyring, err := s.keyringSet("contact_source:"+sourceID+":refresh_token", token); err != nil {
+		return fmt.Errorf("contact source refresh token not stored: %w", err)
+	} else if inKeyring {
+		// Clear fallback storage
+		_, _ = s.db.Exec("UPDATE contact_sources SET encrypted_refresh_token = NULL WHERE id = ?", sourceID)
+		return nil
 	}
 
 	// Fallback to encrypted database
@@ -624,15 +603,12 @@ func (s *Store) setContactSourceRefreshToken(sourceID, token string) error {
 
 // getContactSourceRefreshToken retrieves the refresh token from keyring or encrypted DB
 func (s *Store) getContactSourceRefreshToken(sourceID string) (string, error) {
-	// Try OS keyring first
-	if s.keyringEnabled {
-		token, err := gokeyring.Get(serviceName, "contact_source:"+sourceID+":refresh_token")
-		if err == nil {
-			return token, nil
-		}
-		if err != gokeyring.ErrNotFound {
-			s.log.Warn().Err(err).Msg("Error reading contact source refresh token from keyring, trying fallback")
-		}
+	// Try OS keyring first; surface a live keyring failure instead of
+	// silently answering from the DB copy.
+	if token, found, err := s.keyringGet("contact_source:" + sourceID + ":refresh_token"); err != nil {
+		return "", err
+	} else if found {
+		return token, nil
 	}
 
 	// Try fallback encrypted database

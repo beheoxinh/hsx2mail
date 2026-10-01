@@ -102,6 +102,24 @@ func (s *Stack) Peek() Command {
 	return s.commands[len(s.commands)-1]
 }
 
+// Discard removes a specific command from the stack, leaving everything above
+// it untouched.
+//
+// Callers use this after performing a command's Undo: popping the top of the
+// stack instead would silently delete a *different*, unrelated command that a
+// background action pushed while the network round-trip was in flight.
+func (s *Stack) Discard(target Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := len(s.commands) - 1; i >= 0; i-- {
+		if s.commands[i] == target {
+			s.commands = append(s.commands[:i], s.commands[i+1:]...)
+			return
+		}
+	}
+}
+
 // Clear removes all commands from the stack
 func (s *Stack) Clear() {
 	s.mu.Lock()

@@ -8,33 +8,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	goImap "github.com/emersion/go-imap/v2"
 	"github.com/beheoxinh/hsx2mail/internal/account"
 	"github.com/beheoxinh/hsx2mail/internal/certificate"
 	"github.com/beheoxinh/hsx2mail/internal/contact"
 	"github.com/beheoxinh/hsx2mail/internal/credentials"
 	"github.com/beheoxinh/hsx2mail/internal/draft"
-	"github.com/beheoxinh/hsx2mail/internal/folder"
 	"github.com/beheoxinh/hsx2mail/internal/email"
+	"github.com/beheoxinh/hsx2mail/internal/folder"
 	"github.com/beheoxinh/hsx2mail/internal/imap"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/beheoxinh/hsx2mail/internal/message"
-	"github.com/rs/zerolog"
 	"github.com/beheoxinh/hsx2mail/internal/oauth2"
 	"github.com/beheoxinh/hsx2mail/internal/pgp"
 	"github.com/beheoxinh/hsx2mail/internal/smime"
 	"github.com/beheoxinh/hsx2mail/internal/smtp"
+	goImap "github.com/emersion/go-imap/v2"
+	"github.com/rs/zerolog"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// ComposerAttachment represents an attachment in the compose window
+// ComposerAttachment represents an attachment in the compose window.
+//
+// Data is the legacy base64 payload, still accepted from the frontend but no
+// longer produced by PickAttachmentFiles/ReadFileAsAttachment: those return
+// StagingID and Size only, so picking a 50 MB file costs a 64-character id on
+// the bridge instead of a 67 MB string.
 type ComposerAttachment struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"contentType"`
 	Size        int    `json:"size"`
-	Data        string `json:"data"` // Base64 encoded
+	StagingID   string `json:"stagingId,omitempty"`
+	Data        string `json:"data,omitempty"` // Base64 encoded (legacy)
 }
 
 // composeOps holds shared dependencies for compose-related operations
@@ -53,10 +60,38 @@ type composeOps struct {
 	pgpSigner      *pgp.Signer
 	pgpEncryptor   *pgp.Encryptor
 	draftOps       *draftOps // for draft cleanup on send
+
+	// refreshMu guards refreshLocks. Refreshes are serialized per account:
+	// Microsoft and several custom OIDC providers rotate the refresh token on
+	// every refresh and revoke the previous one, so two concurrent refreshes
+	// with the same token leave the loser holding a dead refresh token and the
+	// account drops into REAUTH_REQUIRED.
+	refreshMu    sync.Mutex
+	refreshLocks map[string]*sync.Mutex
+}
+
+// tokenRefreshLock returns the per-account refresh lock, creating it on first
+// use. Locks are never evicted — the map is bounded by the account count.
+func (ops *composeOps) tokenRefreshLock(accountID string) *sync.Mutex {
+	ops.refreshMu.Lock()
+	defer ops.refreshMu.Unlock()
+	if ops.refreshLocks == nil {
+		ops.refreshLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := ops.refreshLocks[accountID]
+	if !ok {
+		lock = &sync.Mutex{}
+		ops.refreshLocks[accountID] = lock
+	}
+	return lock
 }
 
 // getValidOAuthToken returns a valid OAuth token, refreshing if needed.
 // ctx is the caller's Wails context (for EventsEmit on reauth).
+//
+// The refresh is serialized per account and re-reads the stored tokens after
+// acquiring the lock, so N concurrent callers produce exactly one network
+// refresh and all of them get the same rotated token.
 func (ops *composeOps) getValidOAuthToken(ctx context.Context, accountID string) (*credentials.OAuthTokens, error) {
 	log := logging.WithComponent("composeOps")
 
@@ -67,6 +102,23 @@ func (ops *composeOps) getValidOAuthToken(ctx context.Context, accountID string)
 
 	// Check if token expires within 5 minutes
 	if !tokens.IsExpiringSoon(5 * time.Minute) {
+		return tokens, nil
+	}
+
+	lock := ops.tokenRefreshLock(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-read under the lock: another caller may have just refreshed. Without
+	// this we would POST a refresh token that the provider already revoked.
+	tokens, err = ops.credStore.GetOAuthTokens(accountID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get OAuth tokens: %w", err)
+	}
+	if !tokens.IsExpiringSoon(5 * time.Minute) {
+		log.Debug().
+			Str("account_id", accountID).
+			Msg("OAuth token refreshed by a concurrent caller, reusing it")
 		return tokens, nil
 	}
 
@@ -307,6 +359,9 @@ func (ops *composeOps) shouldPGPEncryptMessage(accountID string, perMessageOverr
 func (ops *composeOps) sendMessage(ctx context.Context, accountID string, msg smtp.ComposeMessage, d *draft.Draft) (*account.Account, error) {
 	log := logging.WithComponent("composeOps")
 
+	// Trust boundary: this value came from the webview over the Wails bridge.
+	msg.Sanitize()
+
 	log.Info().
 		Str("accountID", accountID).
 		Str("from", msg.From.Address).
@@ -332,7 +387,16 @@ func (ops *composeOps) sendMessage(ctx context.Context, accountID string, msg sm
 		return nil, fmt.Errorf("account %q is configured as receive-only (no outgoing server)", acc.Email)
 	}
 
-	// Build RFC822 message
+	// Build RFC822 message. Staged attachments are resolved here: the composer
+	// sent only ids and metadata, so the bytes are pulled from the staging
+	// store at send time rather than being carried through every autosave.
+	if len(msg.Attachments) > 0 {
+		resolved, resolveErr := ops.draftOps.resolveAttachmentContent(msg.Attachments)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("failed to resolve attachments: %w", resolveErr)
+		}
+		msg.Attachments = resolved
+	}
 	rawMsg, err := msg.ToRFC822()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build message: %w", err)
@@ -476,8 +540,12 @@ func (ops *composeOps) sendMessage(ctx context.Context, accountID string, msg sm
 	return acc, nil
 }
 
-// readFileAsAttachment reads a file and creates a ComposerAttachment.
-func readFileAsAttachment(filePath string) (*ComposerAttachment, error) {
+// readFileAsAttachment reads a file and stages its bytes, returning a
+// metadata-only ComposerAttachment. The frontend never receives the content.
+//
+// A nil staging store (unwritable staging directory) falls back to the legacy
+// base64 form so attaching still works, just at the old IPC cost.
+func readFileAsAttachment(staging *draft.StagingStore, filePath string) (*ComposerAttachment, error) {
 	log := logging.WithComponent("compose")
 
 	content, err := os.ReadFile(filePath)
@@ -487,24 +555,107 @@ func readFileAsAttachment(filePath string) (*ComposerAttachment, error) {
 
 	filename := filepath.Base(filePath)
 	contentType := detectContentType(filename)
-	encoded := base64.StdEncoding.EncodeToString(content)
+
+	att := &ComposerAttachment{
+		Filename:    filename,
+		ContentType: contentType,
+		Size:        len(content),
+	}
+
+	if staging == nil {
+		att.Data = base64.StdEncoding.EncodeToString(content)
+		log.Warn().Str("filename", filename).
+			Msg("Staging unavailable, falling back to inline base64 attachment")
+		return att, nil
+	}
+
+	id, err := staging.Put(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stage %s: %w", filename, err)
+	}
+	att.StagingID = id
 
 	log.Debug().
 		Str("filename", filename).
 		Str("contentType", contentType).
 		Int("size", len(content)).
-		Msg("File read as attachment")
+		Str("stagingID", id).
+		Msg("File staged as attachment")
+
+	return att, nil
+}
+
+// readFileAsInlineImage reads a file for inline (cid:) embedding and returns it
+// as base64 rather than staging it. Inline images are rendered as data URLs in
+// the composer's quoted body, so the frontend genuinely needs the bytes; they
+// are bounded by the 10 MB inline cap, so this is the case that does not need
+// the staging optimization.
+func readFileAsInlineImage(filePath string) (*ComposerAttachment, error) {
+	log := logging.WithComponent("compose")
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	filename := filepath.Base(filePath)
+	log.Debug().
+		Str("filename", filename).
+		Int("size", len(content)).
+		Msg("File read as inline image")
 
 	return &ComposerAttachment{
 		Filename:    filename,
-		ContentType: contentType,
+		ContentType: detectContentType(filename),
 		Size:        len(content),
-		Data:        encoded,
+		Data:        base64.StdEncoding.EncodeToString(content),
 	}, nil
 }
 
-// pickAttachmentFiles opens a file picker dialog and returns the selected files as attachments.
-func pickAttachmentFiles(ctx context.Context) ([]ComposerAttachment, error) {
+// stageAttachmentData stores base64 bytes in the staging store and returns a
+// metadata-only ComposerAttachment. A nil staging store falls back to
+// returning the base64 inline, matching readFileAsAttachment's degradation.
+func stageAttachmentData(staging *draft.StagingStore, filename, contentType, base64Data string) (*ComposerAttachment, error) {
+	log := logging.WithComponent("compose")
+
+	content, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode attachment data for %s: %w", filename, err)
+	}
+	if contentType == "" {
+		contentType = detectContentType(filename)
+	}
+
+	att := &ComposerAttachment{
+		Filename:    filepath.Base(filename),
+		ContentType: contentType,
+		Size:        len(content),
+	}
+
+	if staging == nil {
+		att.Data = base64Data
+		log.Warn().Str("filename", att.Filename).
+			Msg("Staging unavailable, falling back to inline base64 attachment")
+		return att, nil
+	}
+
+	id, err := staging.Put(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stage %s: %w", att.Filename, err)
+	}
+	att.StagingID = id
+
+	log.Debug().
+		Str("filename", att.Filename).
+		Int("size", len(content)).
+		Str("stagingID", id).
+		Msg("Attachment bytes staged")
+
+	return att, nil
+}
+
+// pickAttachmentFiles opens a file picker dialog and stages the selected files.
+func pickAttachmentFiles(ctx context.Context, staging *draft.StagingStore) ([]ComposerAttachment, error) {
 	log := logging.WithComponent("compose")
 
 	files, err := wailsRuntime.OpenMultipleFilesDialog(ctx, wailsRuntime.OpenDialogOptions{
@@ -521,7 +672,7 @@ func pickAttachmentFiles(ctx context.Context) ([]ComposerAttachment, error) {
 
 	var attachments []ComposerAttachment
 	for _, filePath := range files {
-		att, err := readFileAsAttachment(filePath)
+		att, err := readFileAsAttachment(staging, filePath)
 		if err != nil {
 			log.Warn().Err(err).Str("path", filePath).Msg("Failed to read file as attachment")
 			continue
@@ -819,6 +970,13 @@ func (a *App) PrepareReply(messageID, mode string) (*smtp.ComposeMessage, error)
 		a.fetchForwardAttachments(log, msg, &attachments)
 	}
 
+	// Carried-over regular attachments are staged rather than inlined, so the
+	// frontend receives a staging id it can hand back on every autosave
+	// instead of re-marshalling megabytes of base64 into each ComposeMessage.
+	// Inline images stay inline: the composer needs their data URL to render
+	// the quoted body, and they are bounded by MAX_INLINE_IMAGE_SIZE.
+	attachments = a.draftOps.stageAttachments(attachments)
+
 	return &smtp.ComposeMessage{
 		From:        from,
 		To:          to,
@@ -935,13 +1093,37 @@ func (a *App) TestSMTPConnection(host string, port int, security, username, pass
 }
 
 // PickAttachmentFiles opens a file picker dialog and returns the selected files as attachments
-func (a *App) PickAttachmentFiles() ([]ComposerAttachment, error) {
-	return pickAttachmentFiles(a.ctx)
+// stagingStore returns the process-wide attachment staging store, or nil when
+// it could not be created. A nil store degrades to the legacy inline-base64
+// path rather than breaking the composer.
+func (a *App) stagingStore() *draft.StagingStore {
+	if a.draftOps.staging == nil {
+		return nil
+	}
+	return a.draftOps.staging
 }
 
-// ReadFileAsAttachment reads a file and creates a ComposerAttachment
+func (a *App) PickAttachmentFiles() ([]ComposerAttachment, error) {
+	return pickAttachmentFiles(a.ctx, a.stagingStore())
+}
+
+// ReadFileAsAttachment reads a file and returns a staged ComposerAttachment.
 func (a *App) ReadFileAsAttachment(filePath string) (*ComposerAttachment, error) {
-	return readFileAsAttachment(filePath)
+	return readFileAsAttachment(a.stagingStore(), filePath)
+}
+
+// StageAttachment stores base64 attachment bytes in the staging store and
+// returns metadata only. This is the drag-and-drop path: the webview hands the
+// frontend a File rather than a path, so the bytes cross the bridge once here
+// and every autosave after that sends just the returned staging id.
+func (a *App) StageAttachment(filename, contentType, base64Data string) (*ComposerAttachment, error) {
+	return stageAttachmentData(a.stagingStore(), filename, contentType, base64Data)
+}
+
+// ReadFileAsInlineImage reads a file for inline embedding, returning base64
+// rather than a staging id (see readFileAsInlineImage).
+func (a *App) ReadFileAsInlineImage(filePath string) (*ComposerAttachment, error) {
+	return readFileAsInlineImage(filePath)
 }
 
 // ============================================================================
@@ -1079,7 +1261,7 @@ func quoteText(s string) string {
 func providerAutoSavesSentMail(host string) bool {
 	host = strings.ToLower(host)
 	autoSaveProviders := []string{
-		"imap.gmail.com",       // Gmail
+		"imap.gmail.com",        // Gmail
 		"outlook.office365.com", // Microsoft 365
 		"imap-mail.outlook.com", // Outlook.com
 	}
@@ -1192,4 +1374,3 @@ func detectContentType(filename string) string {
 		return "application/octet-stream"
 	}
 }
-

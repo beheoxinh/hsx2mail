@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beheoxinh/hsx2mail/internal/email"
 	"github.com/google/uuid"
 )
 
@@ -33,7 +34,10 @@ func (a Address) String() string {
 	return fmt.Sprintf("%s <%s>", encodedName, a.Address)
 }
 
-// Attachment represents a file attachment
+// Attachment represents a file attachment.
+//
+// Content is normally resolved by the app layer (see app.resolveAttachmentContent)
+// before ToRFC822 runs, so writeAttachment never has to know about staging.
 type Attachment struct {
 	Filename      string `json:"filename"`
 	ContentType   string `json:"content_type"`
@@ -41,10 +45,25 @@ type Attachment struct {
 	ContentBase64 string `json:"content_base64,omitempty"` // Base64 string for efficient Wails RPC transfer
 	ContentID     string `json:"content_id"`               // For inline attachments
 	Inline        bool   `json:"inline"`
+
+	// StagingID references attachment bytes held in the Go-side staging
+	// store (see internal/draft.StagingStore). When set, the bytes never
+	// cross the Wails IPC bridge, so an autosave carries metadata only.
+	// The value is the content's SHA-256 hex digest, so it is stable across
+	// a save/load cycle and safe to persist in a draft row.
+	StagingID string `json:"staging_id,omitempty"`
+
+	// Size is the attachment size in bytes. Carried as metadata so the UI
+	// can render a chip for a staged attachment without fetching its bytes.
+	Size int `json:"size,omitempty"`
 }
 
 // ResolveContent returns the attachment's binary content.
-// It prefers the Content field; if empty, decodes ContentBase64.
+//
+// It prefers inline Content, then legacy ContentBase64. An attachment that
+// carries neither is an error, never a silent empty file: the staging blob it
+// referenced may have been swept, and returning (nil, nil) made the caller
+// happily send a zero-byte attachment.
 func (a *Attachment) ResolveContent() ([]byte, error) {
 	if len(a.Content) > 0 {
 		return a.Content, nil
@@ -52,7 +71,62 @@ func (a *Attachment) ResolveContent() ([]byte, error) {
 	if a.ContentBase64 != "" {
 		return base64.StdEncoding.DecodeString(a.ContentBase64)
 	}
-	return nil, nil
+	if a.StagingID != "" {
+		return nil, fmt.Errorf("attachment %q: staged content %s is no longer available", a.Filename, a.StagingID)
+	}
+	return nil, fmt.Errorf("attachment %q has no content", a.Filename)
+}
+
+// Sanitize scrubs every value that will be written into an RFC 5322 header.
+// It is the trust boundary for a ComposeMessage arriving from the webview:
+// address display names, subjects, In-Reply-To and References all land in
+// headers, and a CRLF in any of them is a header-injection primitive.
+//
+// Bodies are left untouched (a CRLF in a body is just a line break) and
+// attachment MIME fields are validated in the builder.
+func (m *ComposeMessage) Sanitize() {
+	m.From = m.From.sanitized()
+	for i := range m.To {
+		m.To[i] = m.To[i].sanitized()
+	}
+	for i := range m.Cc {
+		m.Cc[i] = m.Cc[i].sanitized()
+	}
+	for i := range m.Bcc {
+		m.Bcc[i] = m.Bcc[i].sanitized()
+	}
+	m.Subject = sanitizeHeaderValue(m.Subject)
+	m.InReplyTo = sanitizeHeaderValue(m.InReplyTo)
+	for i := range m.References {
+		m.References[i] = sanitizeHeaderValue(m.References[i])
+	}
+}
+
+// sanitized returns a with CRLF removed from both the display name and the
+// address. The address additionally loses anything outside the addr-spec
+// character set, so a crafted value cannot smuggle a header parameter.
+func (a Address) sanitized() Address {
+	a.Name = sanitizeHeaderValue(a.Name)
+	a.Address = sanitizeAddress(a.Address)
+	return a
+}
+
+// sanitizeAddress keeps the addr-spec shape: local@domain with no CR, LF,
+// angle brackets, quotes, or whitespace. Anything else is stripped, which is
+// enough to make header injection impossible; formatAddresses still runs
+// afterwards for MIME encoding.
+func sanitizeAddress(v string) string {
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range sanitizeHeaderValue(v) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case strings.ContainsRune(".!#$%&'*+-/=?^_`{|}~@", r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // ComposeMessage represents an email message to be composed and sent
@@ -78,10 +152,10 @@ type ComposeMessage struct {
 
 	// Options
 	RequestReadReceipt bool `json:"request_read_receipt"`
-	SignMessage         bool `json:"sign_message"`    // S/MIME sign this message
-	EncryptMessage      bool `json:"encrypt_message"` // S/MIME encrypt this message
-	PGPSignMessage      bool `json:"pgp_sign_message"`    // PGP sign this message
-	PGPEncryptMessage   bool `json:"pgp_encrypt_message"` // PGP encrypt this message
+	SignMessage        bool `json:"sign_message"`        // S/MIME sign this message
+	EncryptMessage     bool `json:"encrypt_message"`     // S/MIME encrypt this message
+	PGPSignMessage     bool `json:"pgp_sign_message"`    // PGP sign this message
+	PGPEncryptMessage  bool `json:"pgp_encrypt_message"` // PGP encrypt this message
 }
 
 // AllRecipients returns all recipients (To + Cc + Bcc)
@@ -135,8 +209,13 @@ func (m *ComposeMessage) ToRFC822() ([]byte, error) {
 		writeHeader(&buf, "Disposition-Notification-To", m.From.String())
 	}
 
+	// Outgoing HTML is authored in the webview (and may be pasted), so it is
+	// not script-free by construction. Run it through the strict composer
+	// policy before it becomes a part of the message.
+	htmlBody := email.NewComposerSanitizer().Sanitize(m.HTMLBody)
+
 	// Determine message structure
-	hasHTML := m.HTMLBody != ""
+	hasHTML := htmlBody != ""
 	hasText := m.TextBody != ""
 	hasAttachments := len(m.Attachments) > 0
 
@@ -154,12 +233,12 @@ func (m *ComposeMessage) ToRFC822() ([]byte, error) {
 	switch {
 	case hasAttachments && (hasHTML || hasText):
 		// multipart/mixed with multipart/alternative or just text
-		if err := writeMultipartMixed(&buf, m, regularAttachments, inlineAttachments); err != nil {
+		if err := writeMultipartMixed(&buf, m, htmlBody, regularAttachments, inlineAttachments); err != nil {
 			return nil, err
 		}
 	case hasHTML && hasText:
 		// multipart/alternative (HTML + plain text)
-		if err := writeMultipartAlternative(&buf, m.TextBody, m.HTMLBody); err != nil {
+		if err := writeMultipartAlternative(&buf, m.TextBody, htmlBody); err != nil {
 			return nil, err
 		}
 	case hasHTML:
@@ -186,8 +265,120 @@ func (m *ComposeMessage) ToRFC822() ([]byte, error) {
 // writeHeader writes a single header line.
 // CRLF characters are stripped from the value to prevent header injection.
 func writeHeader(w io.Writer, name, value string) {
-	value = strings.NewReplacer("\r\n", "", "\r", "", "\n", "").Replace(value)
-	fmt.Fprintf(w, "%s: %s\r\n", name, value)
+	fmt.Fprintf(w, "%s: %s\r\n", name, sanitizeHeaderValue(value))
+}
+
+// sanitizeHeaderValue neutralizes anything that could terminate the header it
+// lands in. CR and LF become spaces rather than being deleted so the value
+// stays readable, and NUL is dropped.
+//
+// Every outbound header must pass through here (or through writeHeader). These
+// values routinely originate from a received message — sender display names,
+// attachment filenames, remote Content-Type parameters — and multipart.Writer
+// writes MIMEHeader values verbatim, so a raw CRLF is a full header-injection
+// primitive on the wire.
+func sanitizeHeaderValue(v string) string {
+	if !strings.ContainsAny(v, "\r\n\x00") {
+		return v
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n':
+			return ' '
+		case '\x00':
+			return -1
+		}
+		return r
+	}, v)
+}
+
+// sanitizeMIMEType validates a Content-Type value as `type/subtype` with
+// optional parameters. Anything else (CRLF injection, a missing slash, a
+// control character) collapses to the safe default. MIME type and parameter
+// tokens per RFC 2045 §5.1 exclude CR, LF, and every control character, so
+// anything containing one is attacker-injected, not a real type.
+func sanitizeMIMEType(v, fallback string) string {
+	v = strings.TrimSpace(sanitizeHeaderValue(v))
+	if v == "" {
+		return fallback
+	}
+	main, params, hasParams := strings.Cut(v, ";")
+	main = strings.ToLower(strings.TrimSpace(main))
+	if !validMIMEType(main) {
+		return fallback
+	}
+	if !hasParams {
+		return main
+	}
+	// Drop any parameter that is not a well-formed `name=value` pair.
+	var kept []string
+	for _, p := range strings.Split(params, ";") {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.ContainsAny(p, "\r\n\x00") {
+			continue
+		}
+		name, value, ok := strings.Cut(p, "=")
+		if !ok || !validMIMEToken(name) || strings.ContainsAny(value, "\"") {
+			continue
+		}
+		kept = append(kept, name+"="+value)
+	}
+	if len(kept) == 0 {
+		return main
+	}
+	return main + "; " + strings.Join(kept, "; ")
+}
+
+func validMIMEType(v string) bool {
+	typ, sub, ok := strings.Cut(v, "/")
+	return ok && validMIMEToken(typ) && validMIMEToken(sub)
+}
+
+// validMIMEToken reports whether s is an RFC 2045 token: no space, no
+// separator, no control character. This is the character class that makes CRLF
+// injection impossible.
+func validMIMEToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+		if strings.ContainsRune(`()<>@,;:\"/[]?=`, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeContentID strips a Content-ID down to the RFC 2392 msg-id character
+// set. Anything else is removed outright: the value is wrapped in angle
+// brackets on the wire, so an embedded `>` or CRLF ends the header.
+func sanitizeContentID(v string) string {
+	var b strings.Builder
+	for _, r := range sanitizeHeaderValue(v) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		if strings.ContainsRune("-._~!$&'()*+,;=:@%", r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// sanitizeFilename keeps a filename printable and CRLF-free. It does NOT strip
+// quotes or semicolons: those are escaped by the %q MIME parameter quoting in
+// the callers, and stripping them would corrupt legitimate names.
+func sanitizeFilename(v string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, sanitizeHeaderValue(v))
 }
 
 // formatAddresses formats a list of addresses for headers
@@ -256,14 +447,14 @@ func writeMultipartAlternative(w *bytes.Buffer, textBody, htmlBody string) error
 }
 
 // writeMultipartMixed writes a multipart/mixed message with attachments
-func writeMultipartMixed(w *bytes.Buffer, m *ComposeMessage, attachments, inlineAttachments []Attachment) error {
+func writeMultipartMixed(w *bytes.Buffer, m *ComposeMessage, htmlBody string, attachments, inlineAttachments []Attachment) error {
 	mpWriter := multipart.NewWriter(w)
 	boundary := mpWriter.Boundary()
 
 	writeHeader(w, "Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q", boundary))
 	w.WriteString("\r\n")
 
-	hasHTML := m.HTMLBody != ""
+	hasHTML := htmlBody != ""
 	hasText := m.TextBody != ""
 
 	if hasHTML && hasText {
@@ -296,7 +487,7 @@ func writeMultipartMixed(w *bytes.Buffer, m *ComposeMessage, attachments, inline
 
 		// HTML alternative (with optional inline attachments)
 		if len(inlineAttachments) > 0 {
-			if err := writeRelatedPart(altWriter, m.HTMLBody, inlineAttachments); err != nil {
+			if err := writeRelatedPart(altWriter, htmlBody, inlineAttachments); err != nil {
 				return err
 			}
 		} else {
@@ -315,7 +506,7 @@ func writeMultipartMixed(w *bytes.Buffer, m *ComposeMessage, attachments, inline
 		}
 	} else if hasHTML {
 		if len(inlineAttachments) > 0 {
-			if err := writeRelatedPart(mpWriter, m.HTMLBody, inlineAttachments); err != nil {
+			if err := writeRelatedPart(mpWriter, htmlBody, inlineAttachments); err != nil {
 				return err
 			}
 		} else {
@@ -326,7 +517,7 @@ func writeMultipartMixed(w *bytes.Buffer, m *ComposeMessage, attachments, inline
 			if err != nil {
 				return err
 			}
-			writeQuotedPrintable(bodyPart, m.HTMLBody)
+			writeQuotedPrintable(bodyPart, htmlBody)
 		}
 	} else if hasText {
 		textHeader := textproto.MIMEHeader{}
@@ -388,15 +579,15 @@ func writeRelatedPart(parentWriter *multipart.Writer, htmlBody string, inlineAtt
 
 // writeAttachment writes a single attachment
 func writeAttachment(w *multipart.Writer, att Attachment) error {
-	contentType := att.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	// Content-Type and Content-Disposition are built from message-derived
+	// values; multipart.Writer emits MIMEHeader values verbatim, so they are
+	// validated here rather than trusted.
+	contentType := sanitizeMIMEType(att.ContentType, "application/octet-stream")
 
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", contentType)
 	header.Set("Content-Transfer-Encoding", "base64")
-	header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", att.Filename))
+	header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", sanitizeFilename(att.Filename)))
 
 	part, err := w.CreatePart(header)
 	if err != nil {
@@ -419,7 +610,9 @@ func writeAttachment(w *multipart.Writer, att Attachment) error {
 
 // writeInlineAttachment writes an inline attachment (for HTML images)
 func writeInlineAttachment(w *multipart.Writer, att Attachment) error {
-	contentType := att.ContentType
+	// An inline image is rendered inside the message body iframe, so its
+	// Content-Type is attacker-controlled and must be validated, not trusted.
+	contentType := sanitizeMIMEType(att.ContentType, "")
 	if contentType == "" {
 		// Try to guess from filename
 		ext := strings.ToLower(filepath.Ext(att.Filename))
@@ -440,9 +633,9 @@ func writeInlineAttachment(w *multipart.Writer, att Attachment) error {
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", contentType)
 	header.Set("Content-Transfer-Encoding", "base64")
-	header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", att.Filename))
-	if att.ContentID != "" {
-		header.Set("Content-ID", fmt.Sprintf("<%s>", att.ContentID))
+	header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", sanitizeFilename(att.Filename)))
+	if contentID := sanitizeContentID(att.ContentID); contentID != "" {
+		header.Set("Content-ID", fmt.Sprintf("<%s>", contentID))
 	}
 
 	part, err := w.CreatePart(header)

@@ -174,9 +174,9 @@ func TestClientConfigForID_RoundTripPreservesOverride(t *testing.T) {
 
 	const slot = "test-ac-roundtrip"
 
-	var activeChoice string                       // marker storage
-	overrideStore := ClientCredentials{}          // override "row" payload
-	var overrideStored bool                       // override "row exists" flag
+	var activeChoice string              // marker storage
+	overrideStore := ClientCredentials{} // override "row" payload
+	var overrideStored bool              // override "row exists" flag
 
 	ActiveChoiceLookup = func(id string) (string, bool) {
 		if id != slot || activeChoice == "" {

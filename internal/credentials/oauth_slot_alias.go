@@ -3,8 +3,6 @@ package credentials
 import (
 	"database/sql"
 	"fmt"
-
-	gokeyring "github.com/zalando/go-keyring"
 )
 
 // User-pickable OAuth slot alias (Settings → OAuth Credentials → pick
@@ -49,14 +47,14 @@ func (s *Store) SetOAuthSlotAlias(configID, targetSlot string) error {
 		return s.ClearOAuthSlotAlias(configID)
 	}
 
-	if s.keyringEnabled {
-		kerr := gokeyring.Set(serviceName, oauthSlotAliasKeyringPrefix+configID, targetSlot)
-		if kerr == nil {
-			s.log.Debug().Str("config_id", configID).Str("target", targetSlot).Msg("OAuth slot alias stored in OS keyring")
-			s.clearSlotAliasDB(configID)
-			return nil
-		}
-		s.log.Warn().Err(kerr).Str("config_id", configID).Msg("Failed to store OAuth slot alias in OS keyring, falling back to encrypted database")
+	// Fail closed on a live keyring failure: a slot alias that silently lands in
+	// the DB instead changes which OAuth client the app uses.
+	if inKeyring, err := s.keyringSet(oauthSlotAliasKeyringPrefix+configID, targetSlot); err != nil {
+		return fmt.Errorf("OAuth slot alias not stored: %w", err)
+	} else if inKeyring {
+		s.log.Debug().Str("config_id", configID).Str("target", targetSlot).Msg("OAuth slot alias stored in OS keyring")
+		s.clearSlotAliasDB(configID)
+		return nil
 	}
 
 	if err := s.ensureSlotAliasTable(); err != nil {
@@ -82,14 +80,12 @@ func (s *Store) GetOAuthSlotAlias(configID string) (string, bool, error) {
 		return "", false, nil
 	}
 
-	if s.keyringEnabled {
-		target, kerr := gokeyring.Get(serviceName, oauthSlotAliasKeyringPrefix+configID)
-		if kerr == nil {
-			return target, true, nil
-		}
-		if kerr != gokeyring.ErrNotFound {
-			s.log.Warn().Err(kerr).Msg("Error reading OAuth slot alias from keyring, trying fallback")
-		}
+	krTarget, found, kerr := s.keyringGet(oauthSlotAliasKeyringPrefix + configID)
+	if kerr != nil {
+		return "", false, kerr
+	}
+	if found {
+		return krTarget, true, nil
 	}
 
 	if err := s.ensureSlotAliasTable(); err != nil {
@@ -111,9 +107,7 @@ func (s *Store) GetOAuthSlotAlias(configID string) (string, bool, error) {
 
 // ClearOAuthSlotAlias removes any alias set for configID. Idempotent.
 func (s *Store) ClearOAuthSlotAlias(configID string) error {
-	if s.keyringEnabled {
-		_ = gokeyring.Delete(serviceName, oauthSlotAliasKeyringPrefix+configID)
-	}
+	s.keyringDelete(oauthSlotAliasKeyringPrefix + configID)
 	s.clearSlotAliasDB(configID)
 	return nil
 }

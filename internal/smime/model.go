@@ -7,12 +7,15 @@ import "time"
 type SignatureStatus string
 
 const (
-	StatusNone          SignatureStatus = ""              // Not S/MIME
-	StatusSigned        SignatureStatus = "signed"        // Valid signature, trusted chain
-	StatusInvalid       SignatureStatus = "invalid"       // Signature does not verify
+	StatusNone          SignatureStatus = ""               // Not S/MIME
+	StatusSigned        SignatureStatus = "signed"         // Valid signature, trusted chain
+	StatusInvalid       SignatureStatus = "invalid"        // Signature does not verify
 	StatusUnknownSigner SignatureStatus = "unknown_signer" // Valid sig, untrusted CA
-	StatusSelfSigned    SignatureStatus = "self_signed"   // Valid sig, self-signed cert
-	StatusExpiredCert   SignatureStatus = "expired_cert"  // Valid sig, expired cert
+	StatusSelfSigned    SignatureStatus = "self_signed"    // Valid sig, self-signed cert
+	StatusExpiredCert   SignatureStatus = "expired_cert"   // Valid sig, expired cert
+	// StatusSenderMismatch means the signature verified, but the certificate
+	// subject is not the message From.
+	StatusSenderMismatch SignatureStatus = "sender_mismatch"
 )
 
 // Certificate represents a user's imported S/MIME certificate

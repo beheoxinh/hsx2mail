@@ -146,9 +146,15 @@ Companion docs:
 - **R31.** Core migrations only run for shared infrastructure (e.g.,
   `extension_secrets`). Per-extension data tables go in the extension's
   own SQLite migrations.
-- **R32.** Rollback SQL lives in `tools/db/rollback-v<latest>-to-v30.sql`
-  + corresponding doc bump in `docs/SQL_ROLLBACK.md`. Update both when
-  adding a core migration.
+- **R32.** Core migrations are **forward-only**; the `migrations` ledger cannot express a
+  down path, so a rollback is a *reconstruction*, not an undo, and is lossy. Only
+  `tools/db/rollback-v39-to-v30.sql` exists today (v39 -> v30). When you add a core
+  migration: append a section to `docs/SQL_ROLLBACK.md` stating what a rollback would cost,
+  add a `tools/db/rollback-v<N>-to-v<prev>.sql` only if a real released-to-released
+  transition needs one, and regenerate `docs/DATABASE.md` (`go run ./tools/db/schemadump
+  > /tmp/schema_raw.txt && python3 tools/db/gen-database-doc.py /tmp/schema_raw.txt`).
+  Note that an index-only migration rolls back with a bare `DROP INDEX`, and that
+  `ALTER TABLE ... DROP COLUMN` fails on any indexed column.
 - **R33.** After backend changes that add/remove Wails methods, run
   `make generate` to regenerate frontend bindings
   (`frontend/wailsjs/go/app/App.{js,d.ts}`). Source of truth is the Go
