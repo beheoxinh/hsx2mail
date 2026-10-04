@@ -253,7 +253,13 @@ func (m *Manager) RefreshTokenWithProvider(provider ProviderConfig, refreshToken
 			ErrorDescription string `json:"error_description"`
 		}
 		_ = json.Unmarshal(body, &errResp)
-		return nil, fmt.Errorf("token refresh failed: %s - %s", errResp.Error, errResp.ErrorDescription)
+		// Terminal codes (invalid_grant / invalid_client) must not be retried —
+		// wrap them so callers can detect the condition and prompt for re-auth
+		// instead of looping through backoff forever.
+		if errResp.Error != "" {
+			return nil, newTokenError(errResp.Error, errResp.ErrorDescription)
+		}
+		return nil, fmt.Errorf("token refresh failed: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokens TokenResponse

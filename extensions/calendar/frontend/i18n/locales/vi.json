@@ -80,7 +80,7 @@
       "namePlaceholder": "ví dụ: Nextcloud Cá nhân",
       "urlLabel": "Link máy chủ",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "Nhập link gốc hoặc link đầy đủ của máy chủ lịch. Email Hub sẽ thử các đường dẫn phổ biến.",
+      "urlHelp": "Nhập link gốc hoặc link đầy đủ của máy chủ lịch. Hsx2Mail sẽ thử các đường dẫn phổ biến.",
       "usernameLabel": "Tên đăng nhập",
       "passwordLabel": "Mật khẩu",
       "authMethod": "Xác thực",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "Email người tổ chức",
       "organizerEmailPlaceholder": "ban@example.com",
-      "organizerEmailPrompt": "Máy chủ của bạn không công bố địa chỉ người dùng lịch. Nhập email mà Email Hub sẽ dùng làm người tổ chức cho các sự kiện trên nguồn này.",
+      "organizerEmailPrompt": "Máy chủ của bạn không công bố địa chỉ người dùng lịch. Nhập email mà Hsx2Mail sẽ dùng làm người tổ chức cho các sự kiện trên nguồn này.",
       "organizerEmailHelp": "Đây là địa chỉ sẽ xuất hiện với tư cách NGƯỜI TỔ CHỨC trên các sự kiện bạn tạo ở đây.",
       "organizerEmailInvalid": "Nhập địa chỉ email hợp lệ."
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "Mặc định theo tài khoản",
       "noDefaultsHint": "Thêm lịch để đặt mặc định.",
       "oauthSection": "Thông tin xác thực OAuth (nâng cao)",
-      "oauthHelp": "Chọn trình xác thực OAuth của Google hoặc Microsoft mà tiện ích này sử dụng. Lựa chọn mặc định (Email Hub testing cho Google, Email Hub - Microsoft cho Microsoft) phù hợp với hầu hết người dùng.",
+      "oauthHelp": "Chọn trình xác thực OAuth của Google hoặc Microsoft mà tiện ích này sử dụng. Lựa chọn mặc định (Hsx2Mail testing cho Google, Hsx2Mail - Microsoft cho Microsoft) phù hợp với hầu hết người dùng.",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} phút",
@@ -242,7 +242,7 @@
       "renameTitle": "Đổi tên nguồn",
       "renameToastSuccess": "Đã đổi tên thành \"{name}\"",
       "timezoneSection": "Múi giờ hiển thị",
-      "timezoneHelp": "Chọn múi giờ Email Hub dùng để hiển thị thời gian sự kiện. Tự động phát hiện sẽ dùng múi giờ hệ thống của bạn."
+      "timezoneHelp": "Chọn múi giờ Hsx2Mail dùng để hiển thị thời gian sự kiện. Tự động phát hiện sẽ dùng múi giờ hệ thống của bạn."
     },
     "localCalendar": {
       "title": "Thêm lịch cục bộ",

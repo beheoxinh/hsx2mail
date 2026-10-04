@@ -1,6 +1,6 @@
 // Maps an app locale (svelte-i18n code, e.g. "en", "de", "zh-TW") to a hunspell
 // dictionary key, or null when the language isn't spellcheckable. Only
-// Latin-script locales Email Hub ships dictionaries for are mapped; the three
+// Latin-script locales Hsx2Mail ships dictionaries for are mapped; the three
 // zh-* locales and vi return null (CJK has no Latin-style per-word spelling;
 // vi has no bundled dictionary yet).
 const APP_TO_DICT: Record<string, string> = {

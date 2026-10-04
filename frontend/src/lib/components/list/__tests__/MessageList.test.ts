@@ -97,6 +97,10 @@ function configure(count: number) {
   setAppBinding('GetUnifiedInboxCount', 0)
   setAppBinding('SearchConversations', [])
   setAppBinding('SearchUnifiedInbox', [])
+  // Selecting a folder now kicks off a background refresh. The shared stub hands
+  // back undefined, which a real binding never does, so register one that
+  // resolves like the Wails bridge does.
+  setAppBinding('SyncFolder', async () => undefined)
   return conversations
 }
 

@@ -93,7 +93,7 @@ type msContact struct {
 	// IMAddresses is a string[] (no protocol field). Encoded "protocol:handle"
 	// stays as a single string round-trip — converter strips/restores the prefix
 	// at the field boundary so the user's protocol metadata is preserved when
-	// the record stays inside Email Hub's data model.
+	// the record stays inside Hsx2Mail's data model.
 	IMAddresses []string `json:"imAddresses,omitempty"`
 
 	Categories []string `json:"categories,omitempty"`

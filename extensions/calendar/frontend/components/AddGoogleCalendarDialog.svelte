@@ -1,9 +1,9 @@
 <script lang="ts">
   // AddGoogleCalendarDialog — minimal three-step picker for attaching a Google
-  // calendar source to an existing Email Hub mail account. Phase 2 Chunk 3.
+  // calendar source to an existing Hsx2Mail mail account. Phase 2 Chunk 3.
   //
   // Flow:
-  //   1. Account select: dropdown of Email Hub accounts filtered to Gmail.
+  //   1. Account select: dropdown of Hsx2Mail accounts filtered to Gmail.
   //   2. Calendar fetch: Calendar_ListGoogleCalendarsForAccount(accountID). If
   //      the broker returns "additional consent required", surface a banner
   //      asking the user to grant calendar access (Chunk 6 will hook this to

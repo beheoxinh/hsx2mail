@@ -119,13 +119,13 @@
     "delete": {
       "title": "删除此联系人？",
       "descriptionLocal": "{name} 将从您的本地联系人中移除。您已发送到此地址的邮件不受影响。",
-      "descriptionCardDAV": "{name} 将从服务器上的此通讯录中移除。此操作无法在 Email Hub 中撤销。"
+      "descriptionCardDAV": "{name} 将从服务器上的此通讯录中移除。此操作无法在 Hsx2Mail 中撤销。"
     },
     "settings": {
       "title": "联系人设置",
       "description": "为联系人扩展配置 OAuth 凭据。读取访问依托于您邮件账户的现有权限；这些凭据用于对 Google 或 Microsoft 来源执行写入操作（编辑/创建/删除）。",
       "oauthHeading": "OAuth 凭据",
-      "oauthDescription": "在可用时，每个槽位都附带 Email Hub 已验证的凭据；切换到自定义以提供您自己项目的客户端 ID 和密钥。",
+      "oauthDescription": "在可用时，每个槽位都附带 Hsx2Mail 已验证的凭据；切换到自定义以提供您自己项目的客户端 ID 和密钥。",
       "googleLabel": "Google 联系人",
       "microsoftLabel": "Microsoft 联系人",
       "writeAccessHeading": "写入权限",

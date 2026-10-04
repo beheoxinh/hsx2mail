@@ -402,7 +402,7 @@ copy_output() {
 # ── main ─────────────────────────────────────────────────────────────────────
 
 main() {
-	printf '%s%sEmail Hub — build%s  (%s%s%s, tags: %s)\n\n' \
+	printf '%s%sHsx2Mail — build%s  (%s%s%s, tags: %s)\n\n' \
 		"$C_BLD" "$C_BLU" "$C_OFF" "$C_DIM" "$BUILD_MODE/$PLATFORM" "$C_OFF" "$BUILD_TAGS"
 
 	((CLEAN)) && do_clean

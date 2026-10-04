@@ -155,7 +155,7 @@ main.go:119  runPreflight(application)  -> app.Preflight (app/app.go:~420)
                ├─ credentials.NewStore (keyring probe + AES fallback)
                └─ OAuth override wiring (UserOverrideLookup, SlotAliasLookup, ActiveChoiceLookup)
 main.go:135  wails.Run(&options.App{ ... })
-               ├─ Title "Email Hub", default size 3/4 x 4/5 of primary screen
+               ├─ Title "Hsx2Mail", default size 3/4 x 4/5 of primary screen
                ├─ StartHidden: true                      main.go:142
                ├─ Frameless: !nativeTitleBar             main.go:141
                ├─ OnStartup / OnShutdown / OnBeforeClose

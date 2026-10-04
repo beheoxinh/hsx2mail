@@ -47,10 +47,10 @@ installed into the hicolor theme by `install.sh`.
 
 | Target | Used by |
 |---|---|
-| `brand/icon.png` (256), `brand/icon-beautyline.png` (512) | brand assets |
+| `brand/icon.png` (256), `brand/icon-512.png` (512) | brand assets |
 | `build/appicon.png` | Wails bundler / window |
 | `build/linux/hsx2mail.png` | Linux install source |
-| `internal/tray/icon.png` (22) | system tray |
+| `internal/tray/icon-{read,unread}[-dark].png` (32) | system tray: a 2x2 of mail state (green tick = inbox clear, red dot = mail waiting) x OS colour scheme (black strokes on light, white on dark). Sources `brand/tray-read.svg` / `brand/tray-unread.svg`; `render_themed` in `build/icons/generate-icons.sh` substitutes the ink and renders all four. `tray.SetUnread` / `tray.SetDark` swap them at runtime. |
 | `frontend/public/favicon.png`, `icon-256.png`, `icon.svg` | webview, taskbar, window chrome |
 | `build/windows/icon.ico` (16…256) | Windows |
 
@@ -111,8 +111,34 @@ make test        # go test ./...
 make test-race   # go test -race -count=1 ./...
 make vet         # go vet ./...
 make lint        # golangci-lint + ESLint + svelte-check + offline icons + knip
-make check       # build + vet + test + lint  ← the gate
 ```
+
+### golangci-lint must agree with the module's Go release
+
+`golangci-lint` type-checks from source using its **own** `GOROOT`. If it was
+built with a different Go release than `go.mod` pins (this module requires
+**go1.25.0**), packages that are not already in the build cache fail to load:
+
+```
+could not import encoding/json (/…/go/1.27.1/src/encoding/json)
+```
+
+Nothing is wrong with the code — CI does not hit this because
+`golangci/golangci-lint-action` supplies its own binary. Two traps to know about:
+
+- A **mise shim** on `PATH` (`~/.local/share/mise/shims/golangci-lint`) overrides
+  `GOROOT`, so exporting the right value does not help. Call the real binary:
+
+  ```bash
+  GOROOT="$(go env GOROOT)" "$(mise where -p golangci-lint 2>/dev/null || command -v golangci-lint)" run
+  ```
+
+- Installing golangci-lint **under** the pinned Go release avoids the problem
+  entirely; that is what CI does.
+
+A cold lint cache is what surfaces this, so a green run does not prove the next
+one will be green.
+
 
 `make check` is what CI-equivalent means here; run it before opening a PR. See
 `OPERATIONS.md` §3.

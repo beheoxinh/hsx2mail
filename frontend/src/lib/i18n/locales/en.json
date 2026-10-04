@@ -78,6 +78,7 @@
     "loadMore": "Load more ({remaining} remaining)",
     "showingNewest": "Showing newest first",
     "showingOldest": "Showing oldest first",
+    "showingUnreadFirst": "Unread shown first",
     "foundIn": "Found in {folder}",
     "encryptedContent": "(Encrypted content)",
     "noContent": "(No content)",

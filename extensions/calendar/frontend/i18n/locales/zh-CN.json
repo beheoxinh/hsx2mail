@@ -80,7 +80,7 @@
       "namePlaceholder": "例如：个人 Nextcloud",
       "urlLabel": "服务器 URL",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "输入基础 URL 或完整的 calendar-home URL。Email Hub 将探测常见路径。",
+      "urlHelp": "输入基础 URL 或完整的 calendar-home URL。Hsx2Mail 将探测常见路径。",
       "usernameLabel": "用户名",
       "passwordLabel": "密码",
       "authMethod": "认证",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "组织者电子邮件",
       "organizerEmailPlaceholder": "you@example.com",
-      "organizerEmailPrompt": "您的服务器未公布日历用户地址。请输入 Email Hub 在此来源的活动中应作为会议组织者使用的电子邮件。",
+      "organizerEmailPrompt": "您的服务器未公布日历用户地址。请输入 Hsx2Mail 在此来源的活动中应作为会议组织者使用的电子邮件。",
       "organizerEmailHelp": "这是您在此创建的活动中将显示为 ORGANIZER（组织者）的地址。",
       "organizerEmailInvalid": "请输入有效的电子邮件地址。"
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "每个账户的默认设置",
       "noDefaultsHint": "添加一个日历以设置默认值。",
       "oauthSection": "OAuth 凭据（高级）",
-      "oauthHelp": "选择此扩展使用的 Google 或 Microsoft OAuth 客户端。默认设置（Google 使用 Email Hub testing，Microsoft 使用 Email Hub - Microsoft）适合大多数用户。",
+      "oauthHelp": "选择此扩展使用的 Google 或 Microsoft OAuth 客户端。默认设置（Google 使用 Hsx2Mail testing，Microsoft 使用 Hsx2Mail - Microsoft）适合大多数用户。",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} 分钟",
@@ -242,7 +242,7 @@
       "renameTitle": "重命名来源",
       "renameToastSuccess": "已重命名为“{name}”",
       "timezoneSection": "显示时区",
-      "timezoneHelp": "选择 Email Hub 用于呈现活动时间的时区。自动检测使用您的系统时区。"
+      "timezoneHelp": "选择 Hsx2Mail 用于呈现活动时间的时区。自动检测使用您的系统时区。"
     },
     "localCalendar": {
       "title": "添加本地日历",

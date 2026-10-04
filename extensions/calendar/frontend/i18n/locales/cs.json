@@ -80,7 +80,7 @@
       "namePlaceholder": "např. Osobní Nextcloud",
       "urlLabel": "URL serveru",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "Zadejte základní URL nebo úplnou URL domovského adresáře kalendáře. Email Hub automaticky vyzkouší běžné cesty.",
+      "urlHelp": "Zadejte základní URL nebo úplnou URL domovského adresáře kalendáře. Hsx2Mail automaticky vyzkouší běžné cesty.",
       "usernameLabel": "Uživatelské jméno",
       "passwordLabel": "Heslo",
       "authMethod": "Ověření",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "E-mail organizátora",
       "organizerEmailPlaceholder": "vy@example.com",
-      "organizerEmailPrompt": "Váš server neposkytl adresu uživatele kalendáře. Zadejte e-mail, který má Email Hub používat jako organizátora schůzek pro události v tomto zdroji.",
+      "organizerEmailPrompt": "Váš server neposkytl adresu uživatele kalendáře. Zadejte e-mail, který má Hsx2Mail používat jako organizátora schůzek pro události v tomto zdroji.",
       "organizerEmailHelp": "Tato adresa bude uvedena jako ORGANIZÁTOR u událostí, které zde vytvoříte.",
       "organizerEmailInvalid": "Zadejte platnou e-mailovou adresu."
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "Výchozí podle účtu",
       "noDefaultsHint": "Přidejte kalendář pro nastavení výchozích hodnot.",
       "oauthSection": "Přihlašovací údaje OAuth (pokročilé)",
-      "oauthHelp": "Vyberte klienta OAuth pro Google nebo Microsoft, kterého toto rozšíření používá. Výchozí nastavení (Email Hub testing pro Google, Email Hub - Microsoft pro Microsoft) je vhodné pro většinu uživatelů.",
+      "oauthHelp": "Vyberte klienta OAuth pro Google nebo Microsoft, kterého toto rozšíření používá. Výchozí nastavení (Hsx2Mail testing pro Google, Hsx2Mail - Microsoft pro Microsoft) je vhodné pro většinu uživatelů.",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} minut",
@@ -242,7 +242,7 @@
       "renameTitle": "Přejmenovat zdroj",
       "renameToastSuccess": "Přejmenováno na „{name}“",
       "timezoneSection": "Časové pásmo",
-      "timezoneHelp": "Vyberte časové pásmo, které Email Hub používá pro zobrazování časů událostí. Automatická detekce používá časové pásmo vašeho systému."
+      "timezoneHelp": "Vyberte časové pásmo, které Hsx2Mail používá pro zobrazování časů událostí. Automatická detekce používá časové pásmo vašeho systému."
     },
     "localCalendar": {
       "title": "Přidat místní kalendář",

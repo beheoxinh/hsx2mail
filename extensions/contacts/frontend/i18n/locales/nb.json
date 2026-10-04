@@ -119,13 +119,13 @@
     "delete": {
       "title": "Slette denne kontakten?",
       "descriptionLocal": "{name} vil bli fjernet fra de lokale kontaktene dine. E-post du allerede har sendt til denne adressen, blir ikke påvirket.",
-      "descriptionCardDAV": "{name} vil bli fjernet fra denne adresseboken på tjeneren. Dette kan ikke angres fra Email Hub."
+      "descriptionCardDAV": "{name} vil bli fjernet fra denne adresseboken på tjeneren. Dette kan ikke angres fra Hsx2Mail."
     },
     "settings": {
       "title": "Kontaktinnstillinger",
       "description": "Sett opp OAuth-legitimasjon for Kontakter-utvidelsen. Lesetilgang følger med den eksisterende tillatelsen til e-postkontoen din; denne legitimasjonen driver SKRIVE-operasjoner (rediger / opprett / slett) mot Google- eller Microsoft-kilder.",
       "oauthHeading": "OAuth-legitimasjon",
-      "oauthDescription": "Hver plass leveres med Email Hub sin verifiserte legitimasjon når den er tilgjengelig; bytt til Egendefinert for å oppgi klient-ID og hemmelighet fra ditt eget prosjekt.",
+      "oauthDescription": "Hver plass leveres med Hsx2Mail sin verifiserte legitimasjon når den er tilgjengelig; bytt til Egendefinert for å oppgi klient-ID og hemmelighet fra ditt eget prosjekt.",
       "googleLabel": "Google-kontakter",
       "microsoftLabel": "Microsoft-kontakter",
       "writeAccessHeading": "Skrivetilgang",

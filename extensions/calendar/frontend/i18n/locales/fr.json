@@ -80,7 +80,7 @@
       "namePlaceholder": "ex. Nextcloud personnel",
       "urlLabel": "URL du serveur",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "Entrez l'URL de base ou l'URL complète du calendrier. Email Hub essaiera les chemins courants.",
+      "urlHelp": "Entrez l'URL de base ou l'URL complète du calendrier. Hsx2Mail essaiera les chemins courants.",
       "usernameLabel": "Nom d'utilisateur",
       "passwordLabel": "Mot de passe",
       "authMethod": "Authentification",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "E-mail de l'organisateur",
       "organizerEmailPlaceholder": "vous@exemple.com",
-      "organizerEmailPrompt": "Votre serveur n'a pas publié d'adresse d'utilisateur de calendrier. Entrez l'e-mail qu'Email Hub doit utiliser comme organisateur de réunion pour les événements de cette source.",
+      "organizerEmailPrompt": "Votre serveur n'a pas publié d'adresse d'utilisateur de calendrier. Entrez l'e-mail qu'Hsx2Mail doit utiliser comme organisateur de réunion pour les événements de cette source.",
       "organizerEmailHelp": "C'est l'adresse qui apparaîtra comme ORGANISATEUR sur les événements que vous créez ici.",
       "organizerEmailInvalid": "Entrez une adresse e-mail valide."
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "Par défaut par compte",
       "noDefaultsHint": "Ajoutez un calendrier pour définir les valeurs par défaut.",
       "oauthSection": "Identifiants OAuth (avancé)",
-      "oauthHelp": "Choisissez le client OAuth Google ou Microsoft utilisé par cette extension. Le défaut (Email Hub testing pour Google, Email Hub - Microsoft pour Microsoft) convient à la plupart des utilisateurs.",
+      "oauthHelp": "Choisissez le client OAuth Google ou Microsoft utilisé par cette extension. Le défaut (Hsx2Mail testing pour Google, Hsx2Mail - Microsoft pour Microsoft) convient à la plupart des utilisateurs.",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} minutes",
@@ -242,7 +242,7 @@
       "renameTitle": "Renommer la source",
       "renameToastSuccess": "Renommé en \"{name}\"",
       "timezoneSection": "Fuseau horaire d'affichage",
-      "timezoneHelp": "Choisissez le fuseau horaire qu'Email Hub utilise pour afficher les heures d'événements. La détection automatique utilise le fuseau horaire de votre système."
+      "timezoneHelp": "Choisissez le fuseau horaire qu'Hsx2Mail utilise pour afficher les heures d'événements. La détection automatique utilise le fuseau horaire de votre système."
     },
     "localCalendar": {
       "title": "Ajouter un calendrier local",

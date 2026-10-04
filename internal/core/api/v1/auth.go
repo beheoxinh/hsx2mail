@@ -46,7 +46,7 @@ type AuthScope struct {
 // client library directly (which is acceptable for first-party extensions
 // living in the same Go module).
 //
-// If/when community extensions land, these become Email Hub-defined facades.
+// If/when community extensions land, these become Hsx2Mail-defined facades.
 type IMAPClient = any
 type SMTPClient = any
 

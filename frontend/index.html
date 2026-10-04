@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Email Hub</title>
+    <title>Hsx2Mail</title>
     <!-- Application icon. Generated from brand/icon.svg by
          build/icons/generate-icons.sh. The webview is what actually draws the
          window, so without this the window falls back to a generic page icon. -->
@@ -24,7 +24,7 @@
 
       /* Boot splash. Visible from the moment the window first paints, until
          the Svelte app is initialized (App.svelte removes this element after
-         its onMount completes). Prevents the "is Email Hub crashed?" perception
+         its onMount completes). Prevents the "is Hsx2Mail crashed?" perception
          during long startup work like database migrations on first upgrade
          from a much older version. Inline because it must render BEFORE the
          JS bundle parses. */
@@ -100,8 +100,8 @@
       WebView shows the window — before the JS bundle parses, before i18n
       loads, before any Wails method round-trips.
     -->
-    <div id="boot-splash" role="status" aria-live="polite" aria-label="Email Hub is starting">
-      <div class="boot-title">Email Hub</div>
+    <div id="boot-splash" role="status" aria-live="polite" aria-label="Hsx2Mail is starting">
+      <div class="boot-title">Hsx2Mail</div>
       <div class="boot-spinner" aria-hidden="true"></div>
       <div class="boot-subtitle">Starting up…</div>
     </div>

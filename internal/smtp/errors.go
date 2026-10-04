@@ -1,4 +1,4 @@
-// Package smtp provides SMTP client functionality for Email Hub
+// Package smtp provides SMTP client functionality for Hsx2Mail
 package smtp
 
 import "errors"

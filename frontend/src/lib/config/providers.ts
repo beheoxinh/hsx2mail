@@ -38,7 +38,7 @@ export interface EmailProvider {
   oauth?: OAuthConfig
   // Allows a user-supplied ("bring your own app") OAuth provider, where the
   // authorization/token endpoints, scopes, and client credentials are entered by
-  // the user rather than shipped by Email Hub. Used for the generic/manual provider so
+  // the user rather than shipped by Hsx2Mail. Used for the generic/manual provider so
   // a custom IMAP server with OAuth (e.g. self-hosted) can be added.
   allowCustomOAuth?: boolean
 }

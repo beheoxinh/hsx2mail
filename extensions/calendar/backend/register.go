@@ -33,7 +33,7 @@ func (e *Extension) Manifest() coreapi.Manifest { return e.manifest }
 // CalDAV setup goes through the standalone "Add CalDAV source" dialog,
 // not through this account-setup-hook path.
 //
-// Runs once per Email Hub process lifetime at App.Startup, regardless of
+// Runs once per Hsx2Mail process lifetime at App.Startup, regardless of
 // enabled state — descriptive registrations persist across enable/disable
 // cycles. The frontend filters by enabled state at render time.
 func (e *Extension) Register(core coreapi.Core) (coreapi.Unregister, error) {

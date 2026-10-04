@@ -495,9 +495,33 @@ func (e *Engine) SyncFolderFlags(ctx context.Context, accountID, folderID string
 
 // syncMessageFlags fetches and updates flags for existing messages from the IMAP server.
 // This ensures local message flags stay in sync with server changes (e.g., webmail).
+// flagsChanged reports whether the server's flags differ from what we have
+// stored. A UID absent from local yields the zero FlagUpdate, so a message we
+// have never written always counts as changed and gets persisted; an existing
+// row counts as unchanged only when every flag matches.
+func flagsChanged(local message.FlagUpdate, isRead, isStarred, isAnswered, isForwarded, isDraft, isDeleted bool) bool {
+	return local.IsRead != isRead ||
+		local.IsStarred != isStarred ||
+		local.IsAnswered != isAnswered ||
+		local.IsForwarded != isForwarded ||
+		local.IsDraft != isDraft ||
+		local.IsDeleted != isDeleted
+}
+
 func (e *Engine) syncMessageFlags(ctx context.Context, client *imapclient.Client, folderID string, uids []uint32) error {
 	if len(uids) == 0 {
 		return nil
+	}
+
+	// Snapshot the flags we already hold so the reconcile below only writes rows
+	// that actually differ. Full reconciliation is the authoritative path and runs
+	// on every manual and auto folder sync, so on a quiet mailbox this is the
+	// difference between rewriting every row in the folder and writing the handful
+	// that changed. Comparing against what is really stored (rather than a cached
+	// assumption) is what keeps the periodic full sweep self-healing.
+	localFlags, err := e.messageStore.GetUIDFlags(folderID)
+	if err != nil {
+		return fmt.Errorf("failed to load local flags: %w", err)
 	}
 
 	// Fetch flags in batches to avoid overwhelming the server
@@ -572,8 +596,10 @@ func (e *Engine) syncMessageFlags(ctx context.Context, client *imapclient.Client
 				}
 			}
 
-			// Collect flag update for batch processing
-			if fetchedUID > 0 {
+			// Collect flag update for batch processing, but only when it would
+			// actually change the row. Skipping the no-op is the whole point:
+			// a message nobody touched must not cost a row write.
+			if fetchedUID > 0 && flagsChanged(localFlags[fetchedUID], isRead, isStarred, isAnswered, isForwarded, isDraft, isDeleted) {
 				flagUpdates = append(flagUpdates, message.FlagUpdate{
 					UID:         fetchedUID,
 					IsRead:      isRead,

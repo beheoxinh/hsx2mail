@@ -7,7 +7,7 @@ auto-start with the desktop session. This file is the entry point for every othe
 document in the repository: if two documents disagree, the one marked **canonical** here
 wins, and the analysis set under `docs/analysis/` is the evidence of record for defects.
 
-- **Product name:** Hsx2Mail (runtime window title is still the legacy "Email Hub").
+- **Product name:** Hsx2Mail (window title, tray, notifications and About all report `Hsx2Mail`).
 - **Version:** 0.3.2 (`app/state.go:30`, `wails.json:12`, `frontend/package.json:4`).
 - **Tech stack:** Wails v2.12 · Go 1.25 (`go.mod:3`) · Svelte 5 (runes) · TypeScript · Vite 6 ·
   Tailwind 3 · bits-ui · Tiptap v2 · modernc.org/sqlite (pure Go, no CGO) · go-imap v2 beta.
@@ -50,7 +50,7 @@ Status legend: **Canonical** = trust as-is for its topic and do not duplicate.
 |---|---|---|
 | `docs/README.md` (this file) | Index, reading order, maintenance rules | Start here. |
 | `docs/architecture.md` | **Structure**: repository layout, module graph, startup order, data flow | Summarises other topics and links out; does not re-document them. |
-| `docs/DATABASE.md` | **Schema**: migrations v1..v42, every table and column, all 42 indexes, DSN + PRAGMAs, foreign keys, transaction boundaries, retention | Migration, column and index sections are **generated** — see below. |
+| `docs/DATABASE.md` | **Schema**: migrations v1..v43, every table and column, all 42 indexes, DSN + PRAGMAs, foreign keys, transaction boundaries, retention | Migration, column and index sections are **generated** — see below. |
 | `docs/OPERATIONS.md` | **Build, test, release, install, troubleshoot** | `BUILD.md` and `RELEASE.md` are short forms of this. |
 | `docs/SQL_ROLLBACK.md` | **Backup, restore, corruption repair, forward-only rationale, per-transition rollback** | Includes the v40/v41/v42 notes. |
 | `docs/BACKGROUND.md` | **Startup, close semantics, autostart, tray, single instance, sleep/wake, network, scheduling** | |

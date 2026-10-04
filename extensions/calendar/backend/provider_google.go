@@ -4,7 +4,7 @@ package backend
 //
 // Implements the Provider interface for Google Calendar (API v3) using
 // coreapi.Auth's OAuth-vended *http.Client. Translation between Google's
-// event JSON and Email Hub's ICS blob lives in provider_google_translate.go.
+// event JSON and Hsx2Mail's ICS blob lives in provider_google_translate.go.
 //
 // Storage model unchanged from CalDAV: events.ics_blob holds a single-VEVENT
 // VCALENDAR per row, event_recurrence_overrides holds per-instance overrides.
@@ -381,7 +381,7 @@ func (p googleProvider) PushEvent(ctx context.Context, src Source, cal Calendar,
 }
 
 // googleEventToAttendees converts the Google response's attendees +
-// organizer fields into Email Hub's shape. Reuses the existing translation
+// organizer fields into Hsx2Mail's shape. Reuses the existing translation
 // by going through the ICS round-trip — same path sync uses — so the
 // PartStat / Role / CUType normalization stays in one place.
 //

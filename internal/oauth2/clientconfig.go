@@ -14,13 +14,13 @@ type ClientCredentials struct {
 	ClientSecret string
 }
 
-// CredentialsProvider is the source-of-credentials interface that Email Hub core
+// CredentialsProvider is the source-of-credentials interface that Hsx2Mail core
 // and each extension implement. ClientConfigForID walks the registered chain
 // at lookup time; first provider that knows the requested configID wins.
 //
 // Each extension owns its OWN credential injection at build time (per-extension
 // .env / shim + a small creds.go in the extension package that registers a
-// CredentialsProvider during Extension.Register()). Email Hub core compiles in
+// CredentialsProvider during Extension.Register()). Hsx2Mail core compiles in
 // only its own *-mail creds via the built-in core provider.
 type CredentialsProvider interface {
 	// Lookup returns the credentials for the given client config id, or
@@ -36,7 +36,7 @@ type CredentialsProvider interface {
 var UserOverrideLookup func(configID string) (ClientCredentials, bool)
 
 // SlotAliasLookup is an optional pluggable hook that maps one slot id onto
-// another (Settings → OAuth Credentials → pick "Email Hub mail client"). When
+// another (Settings → OAuth Credentials → pick "Hsx2Mail mail client"). When
 // non-nil and the user has set an alias for the given configID, the lookup
 // resolves to the aliased target instead of the slot's own creds. Checked
 // AFTER UserOverrideLookup (custom creds win over an alias) and BEFORE the
@@ -63,7 +63,7 @@ var (
 // RegisterCredentialsProvider appends a provider to the resolution chain.
 // Safe to call from package init() functions or from Extension.Register().
 // Order matters: providers are queried in registration order, first-hit wins.
-// Email Hub core registers itself early (init); extensions register at their
+// Hsx2Mail core registers itself early (init); extensions register at their
 // Register() time, after core. Result: core's *-mail slots always resolve
 // before any extension's slots — but since slot names don't collide between
 // core and extensions, the order is purely a performance hint.
@@ -95,7 +95,7 @@ func RegisterCredentialsProvider(p CredentialsProvider) {
 //
 //  3. (zero, false) if nothing matches.
 //
-// Known config ids today: 'google-mail' / 'microsoft-mail' (Email Hub core
+// Known config ids today: 'google-mail' / 'microsoft-mail' (Hsx2Mail core
 // owns both, plus microsoft-contacts + microsoft-calendar which are
 // registered as core aliases of microsoft-mail), 'google-contacts'
 // (Contacts extension), 'google-calendar' (Calendar extension).

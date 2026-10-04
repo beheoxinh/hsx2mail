@@ -119,13 +119,13 @@
     "delete": {
       "title": "Smazat tento kontakt?",
       "descriptionLocal": "{name} bude odstraněn z vašich místních kontaktů. E-maily, které jste již na tuto adresu odeslali, tím nebudou ovlivněny.",
-      "descriptionCardDAV": "{name} bude odstraněn z tohoto adresáře na serveru. Tuto akci nelze v Email Hubu vrátit zpět."
+      "descriptionCardDAV": "{name} bude odstraněn z tohoto adresáře na serveru. Tuto akci nelze v Hsx2Mailu vrátit zpět."
     },
     "settings": {
       "title": "Nastavení kontaktů",
       "description": "Nakonfigurujte přihlašovací údaje OAuth pro rozšíření Kontakty. Přístup pro čtení využívá oprávnění vašeho e-mailového účtu; tyto údaje slouží pro operace ZÁPISU (úpravy / vytváření / mazání) ve zdrojích Google a Microsoft.",
       "oauthHeading": "Přihlašovací údaje OAuth",
-      "oauthDescription": "Každá položka používá ověřené přihlašovací údaje Email Hubu, pokud jsou dostupné. Chcete-li vložit ID klienta a tajný klíč svého projektu, přepněte na „Vlastní“.",
+      "oauthDescription": "Každá položka používá ověřené přihlašovací údaje Hsx2Mailu, pokud jsou dostupné. Chcete-li vložit ID klienta a tajný klíč svého projektu, přepněte na „Vlastní“.",
       "googleLabel": "Kontakty Google",
       "microsoftLabel": "Kontakty Microsoft",
       "writeAccessHeading": "Přístup k zápisu",

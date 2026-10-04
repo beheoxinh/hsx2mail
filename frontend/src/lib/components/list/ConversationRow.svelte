@@ -271,7 +271,7 @@
     draggable="true"
     class="group w-full flex items-start {densityClasses.row[density]} text-left border-b border-border transition-colors duration-300 cursor-pointer outline-none {selected
       ? 'bg-primary/20'
-      : 'hover:bg-muted/50'} {getAccentBarUnread() && hasUnread ? 'border-l-2 border-l-primary' : ''}"
+      : 'hover:bg-muted/50'} {getAccentBarUnread() && hasUnread ? 'border-l-4 border-l-primary' : ''}"
     onclick={(e) => onSelect(e)}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() }}}
     ondragstart={handleDragStart}

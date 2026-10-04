@@ -170,7 +170,7 @@ func (a *API) createMicrosoftContact(input coreapi.ContactCreateInput, email str
 // updateMicrosoftContact PATCHes the existing contact under rec.ID. Sends the
 // full intended record state — Graph treats missing scalar fields as
 // "unchanged" and replaces multi-value arrays wholesale, which matches
-// Email Hub's "patch is full state" semantics from applyContactPatchToRecord.
+// Hsx2Mail's "patch is full state" semantics from applyContactPatchToRecord.
 //
 // No etag gate (Graph contacts don't enforce). Photo handling is a separate
 // PATCH /photo/$value after the main update; photo-step failure is non-fatal.

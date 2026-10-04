@@ -65,6 +65,7 @@
     "loadMore": "Last inn mer ({remaining} gjenstår)",
     "showingNewest": "Viser nyeste først",
     "showingOldest": "Viser eldste først",
+    "showingUnreadFirst": "Uleste vises først",
     "foundIn": "Funnet i {folder}",
     "encryptedContent": "(Innholdet er kryptert)",
     "noContent": "(Ingen innhold)",

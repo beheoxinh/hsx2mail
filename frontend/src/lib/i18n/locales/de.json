@@ -78,6 +78,7 @@
     "loadMore": "Mehr laden ({remaining} verbleibend)",
     "showingNewest": "Neueste werden zuerst angezeigt",
     "showingOldest": "Älteste werden zuerst angezeigt",
+    "showingUnreadFirst": "Ungelesene werden zuerst angezeigt",
     "foundIn": "Gefunden in {folder}",
     "encryptedContent": "(Verschlüsselter Inhalt)",
     "noContent": "(Kein Inhalt)",

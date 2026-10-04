@@ -119,13 +119,13 @@
     "delete": {
       "title": "Diesen Kontakt löschen?",
       "descriptionLocal": "{name} wird aus deinen lokalen Kontakten entfernt. Bereits an diese Adresse gesendete E-Mails sind davon nicht betroffen.",
-      "descriptionCardDAV": "{name} wird aus diesem Adressbuch auf dem Server entfernt. Dies kann über Email Hub nicht rückgängig gemacht werden."
+      "descriptionCardDAV": "{name} wird aus diesem Adressbuch auf dem Server entfernt. Dies kann über Hsx2Mail nicht rückgängig gemacht werden."
     },
     "settings": {
       "title": "Kontakt-Einstellungen",
       "description": "Konfiguriere OAuth-Anmeldedaten für die Kontakte-Erweiterung. Der Lesezugriff basiert auf den bestehenden Berechtigungen deines E-Mail-Kontos; diese Anmeldedaten werden für SCHREIB-Operationen (Bearbeiten / Erstellen / Löschen) auf Google- oder Microsoft-Quellen benötigt.",
       "oauthHeading": "OAuth-Anmeldedaten",
-      "oauthDescription": "Jeder Platzhalter ist standardmäßig mit den verifizierten Anmeldedaten von Email Hub ausgestattet, sofern verfügbar. Schalte auf „Benutzerdefiniert“, um die Client-ID und das Geheimnis deines eigenen Projekts zu hinterlegen.",
+      "oauthDescription": "Jeder Platzhalter ist standardmäßig mit den verifizierten Anmeldedaten von Hsx2Mail ausgestattet, sofern verfügbar. Schalte auf „Benutzerdefiniert“, um die Client-ID und das Geheimnis deines eigenen Projekts zu hinterlegen.",
       "googleLabel": "Google Kontakte",
       "microsoftLabel": "Microsoft Kontakte",
       "writeAccessHeading": "Schreibzugriff",

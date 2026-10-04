@@ -10,7 +10,7 @@ import type { Locale } from 'date-fns'
 export type ComposerMode = 'inline' | 'detached'
 export type ComposerFormat = 'rich' | 'plain'
 export type MessageListDensity = 'micro' | 'compact' | 'standard' | 'large'
-export type MessageListSortOrder = 'newest' | 'oldest'
+export type MessageListSortOrder = 'newest' | 'oldest' | 'unread-first'
 export type ThemeMode =
   | 'system'
   | 'light' | 'light-blue' | 'light-orange' | 'light-balanced' | 'adwaita-light' | 'breeze-light'
@@ -41,7 +41,7 @@ let nativeTitleBar = $state<boolean>(false)
 let alwaysLoadImages = $state<boolean>(false)
 let darkMailContent = $state<boolean>(false)
 let darkComposerBody = $state<boolean>(false)
-let accentBarUnread = $state<boolean>(false)
+let accentBarUnread = $state<boolean>(true)
 let showMessageListCircles = $state<boolean>(true)
 let showMessageListProfilePics = $state<boolean>(false)
 let showViewerCircles = $state<boolean>(true)
@@ -273,7 +273,7 @@ export async function loadSettings(): Promise<ThemeMode> {
     alwaysLoadImages = alwaysImages ?? false
     darkMailContent = darkMail ?? false
     darkComposerBody = darkComposer ?? false
-    accentBarUnread = accentBar ?? false
+    accentBarUnread = accentBar ?? true
     showMessageListCircles = listCircles ?? true
     showMessageListProfilePics = listProfilePics ?? false
     showViewerCircles = viewerCircles ?? true

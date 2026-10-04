@@ -130,6 +130,9 @@ func (a *App) SetThemeMode(mode string) error {
 	// Broadcast theme change to all detached composer windows
 	a.BroadcastThemeChange(mode)
 
+	// The tray icon is drawn in the desktop's colours, so it has to follow too.
+	a.syncTrayScheme()
+
 	return nil
 }
 
@@ -153,7 +156,7 @@ func (a *App) SetTermsAccepted(accepted bool) error {
 	return a.settingsStore.SetTermsAccepted(accepted)
 }
 
-// GetLastSeenVersion returns the Email Hub version last acknowledged by the user
+// GetLastSeenVersion returns the Hsx2Mail version last acknowledged by the user
 // in the "What's new in this version" launch dialog. Empty = never acknowledged.
 func (a *App) GetLastSeenVersion() (string, error) {
 	return a.settingsStore.GetLastSeenVersion()
@@ -179,12 +182,12 @@ func (a *App) SetOAuthWarningDisabled(disabled bool) error {
 	return a.settingsStore.SetOAuthWarningDisabled(disabled)
 }
 
-// GetRunBackground returns whether Email Hub keeps running when the window is closed
+// GetRunBackground returns whether Hsx2Mail keeps running when the window is closed
 func (a *App) GetRunBackground() (bool, error) {
 	return a.settingsStore.GetRunBackground()
 }
 
-// SetRunBackground sets whether Email Hub keeps running when the window is closed.
+// SetRunBackground sets whether Hsx2Mail keeps running when the window is closed.
 // Disabling also force-disables start_hidden.
 func (a *App) SetRunBackground(enabled bool) error {
 	if err := a.settingsStore.SetRunBackground(enabled); err != nil {
@@ -202,12 +205,12 @@ func (a *App) SetRunBackground(enabled bool) error {
 	return nil
 }
 
-// GetStartHidden returns whether Email Hub starts with the window hidden
+// GetStartHidden returns whether Hsx2Mail starts with the window hidden
 func (a *App) GetStartHidden() (bool, error) {
 	return a.settingsStore.GetStartHidden()
 }
 
-// SetStartHidden sets whether Email Hub starts with the window hidden.
+// SetStartHidden sets whether Hsx2Mail starts with the window hidden.
 // Enabling also force-enables run_background (start hidden requires background mode).
 func (a *App) SetStartHidden(enabled bool) error {
 	if enabled {
@@ -224,12 +227,12 @@ func (a *App) SetStartHidden(enabled bool) error {
 	return nil
 }
 
-// GetAutostart returns whether Email Hub starts on login
+// GetAutostart returns whether Hsx2Mail starts on login
 func (a *App) GetAutostart() (bool, error) {
 	return a.settingsStore.GetAutostart()
 }
 
-// SetAutostart sets whether Email Hub starts on login.
+// SetAutostart sets whether Hsx2Mail starts on login.
 // Manages the XDG autostart .desktop file or Flatpak Background portal.
 //
 // Enabling also turns on background mode + start-hidden (Phase 3 tasks
@@ -402,7 +405,7 @@ func (a *App) SetAlwaysLoadImages(enabled bool) error {
 }
 
 // GetDarkMailContent returns whether email content should be visually darkened
-// while Email Hub is in dark mode.
+// while Hsx2Mail is in dark mode.
 func (a *App) GetDarkMailContent() (bool, error) {
 	return a.settingsStore.GetDarkMailContent()
 }
@@ -413,7 +416,7 @@ func (a *App) SetDarkMailContent(enabled bool) error {
 }
 
 // GetDarkComposerBody returns whether the composer message body should use a
-// dark background while Email Hub is in dark mode.
+// dark background while Hsx2Mail is in dark mode.
 func (a *App) GetDarkComposerBody() (bool, error) {
 	return a.settingsStore.GetDarkComposerBody()
 }

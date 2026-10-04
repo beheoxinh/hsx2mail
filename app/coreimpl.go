@@ -25,7 +25,7 @@ import (
 //
 // One coreImpl is constructed PER extension at App.Startup. The extensionID
 // field scopes Auth() to that specific extension so the Auth Broker can route
-// HTTPClient requests via the extension's own client config (or via Email Hub
+// HTTPClient requests via the extension's own client config (or via Hsx2Mail
 // core's mail OAuth, per the manifest's first_party_uses_core_for_scopes).
 //
 // Storage, Notifications, and Events are still Phase 1 stubs.
@@ -207,7 +207,7 @@ func (c *coreImpl) Extension(id string) (any, bool) {
 // extensionAuth bundles the calling extension's identity + manifest with the
 // shared Auth Broker. HTTPClient consults the manifest's
 // first_party_uses_core_for_scopes to decide whether each scope routes through
-// Email Hub core's mail OAuth (<provider>-mail) or the extension's own client
+// Hsx2Mail core's mail OAuth (<provider>-mail) or the extension's own client
 // config (<provider>-<extensionID>). Mixed-scope calls are rejected; the
 // extension must issue separate HTTPClient calls for each routing target.
 

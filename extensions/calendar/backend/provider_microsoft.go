@@ -4,7 +4,7 @@ package backend
 //
 // Implements the Provider interface for Microsoft Graph Calendar
 // (Outlook.com + Microsoft 365) using coreapi.Auth's OAuth-vended
-// *http.Client. Translation between Graph's event JSON and Email Hub's
+// *http.Client. Translation between Graph's event JSON and Hsx2Mail's
 // ICS blob lives in provider_microsoft_translate.go.
 //
 // Storage model unchanged from Google: events.ics_blob holds a
@@ -616,7 +616,7 @@ func (p microsoftProvider) PushEvent(ctx context.Context, src Source, cal Calend
 }
 
 // graphEventToAttendees converts the Graph response's attendees +
-// organizer fields into Email Hub's shape. Mirrors googleEventToAttendees
+// organizer fields into Hsx2Mail's shape. Mirrors googleEventToAttendees
 // in provider_google.go — round-trips through ICS so the parser is the
 // single source of truth.
 func graphEventToAttendees(out graphEvent) ([]Attendee, *Organizer) {

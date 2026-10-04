@@ -78,6 +78,7 @@
     "loadMore": "Tải thêm ({remaining} còn lại)",
     "showingNewest": "Hiển thị mới nhất trước",
     "showingOldest": "Hiển thị cũ nhất trước",
+    "showingUnreadFirst": "Chưa đọc hiển thị trước",
     "foundIn": "Tìm thấy trong {folder}",
     "encryptedContent": "(Nội dung đã được mã hóa)",
     "noContent": "(Không có nội dung)",

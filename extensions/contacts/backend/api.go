@@ -16,7 +16,7 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/kit/davutil"
 )
 
-// Source IDs for Email Hub's core local contact store. CardDAV sources use their
+// Source IDs for Hsx2Mail's core local contact store. CardDAV sources use their
 // own UUIDs (one per configured source).
 //
 // The local source has two sub-categories distinguished by `contacts.kind`:

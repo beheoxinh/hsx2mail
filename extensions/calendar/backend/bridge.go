@@ -257,7 +257,7 @@ func (b *CalendarBridge) Calendar_AddLocalCalendar(sourceID, displayName, color 
 
 // Calendar_DeleteCalendar removes a local calendar and CASCADEs through
 // its events, recurrence overrides, and alarms. Only local-source
-// calendars are deletable from Email Hub. Idempotent.
+// calendars are deletable from Hsx2Mail. Idempotent.
 func (b *CalendarBridge) Calendar_DeleteCalendar(calendarID string) error {
 	if !b.gateEnabled() {
 		return errors.New("calendar: extension disabled")
@@ -755,7 +755,7 @@ func (b *CalendarBridge) Calendar_AddMicrosoftSource(accountID, name, accountEma
 // succeeds and the picker UI populates. Mirrors contacts'
 // Contacts_EnableWriteAccess flow shape.
 //
-// `provider` is "google" or "microsoft"; `accountID` is the existing Email Hub
+// `provider` is "google" or "microsoft"; `accountID` is the existing Hsx2Mail
 // mail account; `expectedEmail` is the email that the OAuth grant must
 // match (defense against the user picking a different account in the IdP
 // window).

@@ -78,6 +78,7 @@
     "loadMore": "Načíst další ({remaining} zbývá)",
     "showingNewest": "Nejnovější zobrazeny jako první",
     "showingOldest": "Nejstarší zobrazeny jako první",
+    "showingUnreadFirst": "Nepřečtené zobrazeny jako první",
     "foundIn": "Nalezeno ve složce {folder}",
     "encryptedContent": "(Šifrovaný obsah)",
     "noContent": "(Žádný obsah)",

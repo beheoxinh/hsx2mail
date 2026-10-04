@@ -23,7 +23,7 @@ func (a *App) SaveUIState(state *appstate.UIState) error {
 // App Info API - Exposed to frontend via Wails bindings
 // ============================================================================
 
-// Version is the Email Hub release version. Bump on each release; consumed by
+// Version is the Hsx2Mail release version. Bump on each release; consumed by
 // the About dialog via GetAppInfo() and by the --version CLI flag in main.go.
 // (wails.json, frontend/package.json, and metainfo.xml each carry their own
 // version strings for their respective tooling.)
@@ -41,7 +41,7 @@ type AppInfo struct {
 // GetAppInfo returns application metadata for the About dialog
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{
-		Name:        "Email Hub",
+		Name:        "Hsx2Mail",
 		Version:     Version,
 		Description: "An Open Source Lightweight E-Mail Client",
 		Website:     "https://github.com/beheoxinh/hsx2mail",
@@ -55,7 +55,7 @@ func (a *App) IsFlatpak() bool {
 }
 
 // GetPendingMailto returns and clears any pending mailto: URL data.
-// This is used when Email Hub is launched with a mailto: URL argument.
+// This is used when Hsx2Mail is launched with a mailto: URL argument.
 func (a *App) GetPendingMailto() *MailtoData {
 	data := a.PendingMailto
 	a.PendingMailto = nil // Clear after reading

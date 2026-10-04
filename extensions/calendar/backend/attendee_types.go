@@ -1,7 +1,7 @@
 package backend
 
 // PartStat is the iCalendar PARTSTAT enum (RFC 5545 § 3.2.12). Stored on
-// Attendee. The Email Hub in-memory enum mirrors the wire-format strings so
+// Attendee. The Hsx2Mail in-memory enum mirrors the wire-format strings so
 // translation to/from ICS is identity; provider-specific translation (Google
 // "needsAction|declined|tentative|accepted", Graph "none|organizer|
 // tentativelyAccepted|accepted|declined|notResponded") happens in

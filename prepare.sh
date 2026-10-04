@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prepare.sh — install everything needed to build and develop Email Hub
+# prepare.sh — install everything needed to build and develop Hsx2Mail
 # (hsx2mail) on a freshly cloned checkout.
 #
 # Idempotent: safe to re-run. Each step checks first and only acts when
@@ -561,7 +561,7 @@ verify() {
 # ── main ─────────────────────────────────────────────────────────────────────
 
 main() {
-	printf '%s%sEmail Hub — development environment%s\n' "$C_BLD" "$C_BLU" "$C_OFF"
+	printf '%s%sHsx2Mail — development environment%s\n' "$C_BLD" "$C_BLU" "$C_OFF"
 	printf '%srepo: %s%s\n\n' "$C_BLD" "$REPO_ROOT" "$C_OFF"
 
 	ensure_system_libs

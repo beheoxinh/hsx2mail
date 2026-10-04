@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/beheoxinh/hsx2mail/internal/account"
 	"github.com/beheoxinh/hsx2mail/internal/certificate"
@@ -401,6 +402,11 @@ func (a *App) SetDefaultIdentity(accountID, identityID string) error {
 // Connection Testing
 // ============================================================================
 
+// imapConnectTestReadTimeout bounds how long a connection test waits for the
+// server greeting and the LOGIN reply. Short on purpose: a test that has not
+// answered in 15s is not going to, and the user is staring at a disabled form.
+const imapConnectTestReadTimeout = 15 * time.Second
+
 // ConnectionTestResult holds the result of a connection test
 type ConnectionTestResult struct {
 	Success             bool                         `json:"success"`
@@ -431,6 +437,12 @@ func (a *App) TestConnection(config account.AccountConfig) ConnectionTestResult 
 
 	// Create a temporary IMAP client to test connection
 	clientConfig := imap.DefaultConfig()
+	// The default 3-minute read timeout is sized for bulk body fetches. Here the
+	// only reads are the server greeting and the LOGIN reply, both of which arrive
+	// in milliseconds on a healthy server. Left at 3 minutes, a blackholed port
+	// makes the form sit on a spinner for three minutes with no way to cancel,
+	// which reads as a hung app. Bound it to something a person will wait for.
+	clientConfig.ReadTimeout = imapConnectTestReadTimeout
 	clientConfig.Host = config.IMAPHost
 	clientConfig.Port = config.IMAPPort
 	clientConfig.Security = imap.SecurityType(config.IMAPSecurity)

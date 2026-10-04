@@ -40,7 +40,7 @@
     onSpellcheckLanguagesChange,
   }: Props = $props()
 
-  // Dictionaries Email Hub ships, with their native display names.
+  // Dictionaries Hsx2Mail ships, with their native display names.
   const dictLanguages = SPELLCHECK_DICTS.map((code) => ({
     code,
     name: supportedLocales.find((l) => l.code === code)?.name ?? code,

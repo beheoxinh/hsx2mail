@@ -160,7 +160,7 @@ func (a *API) CreateEvent(in EventInput) (string, error) {
 	// place attendee data ends up — EventDetail / EventComposerDialog
 	// read the JSON columns, not the parsed ICS, so attendees disappear
 	// from the UI even though the provider received them and sent
-	// invitations. (Bug: invitee got the email but Email Hub's UI lost them.)
+	// invitations. (Bug: invitee got the email but Hsx2Mail's UI lost them.)
 	ev.Attendees, ev.Organizer = attendeesFromInput(in)
 
 	provider := ProviderForSource(*src, ProviderDeps{Store: a.store, Secrets: a.secrets, Auth: a.auth})
@@ -878,7 +878,7 @@ func serializeVEVENT(uid string, in EventInput) (string, error) {
 
 	cal := ical.NewCalendar()
 	cal.Props.SetText(ical.PropVersion, "2.0")
-	cal.Props.SetText(ical.PropProductID, "-//Email Hub//Calendar Extension//EN")
+	cal.Props.SetText(ical.PropProductID, "-//Hsx2Mail//Calendar Extension//EN")
 	cal.Children = append(cal.Children, event.Component)
 
 	var buf bytes.Buffer

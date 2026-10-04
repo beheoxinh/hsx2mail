@@ -7,7 +7,7 @@ package sync
 // and the server returns only UIDs whose flags changed after <prev> — typically
 // 0-10 messages per sync instead of every UID in the mailbox.
 //
-// For Email Hub users with 10k+ inboxes this turns flag sync from a multi-second
+// For Hsx2Mail users with 10k+ inboxes this turns flag sync from a multi-second
 // pre-cycle stall into a single sub-100ms round-trip.
 //
 // Files split for review/test isolation:
@@ -209,6 +209,14 @@ func (e *Engine) syncMessageFlagsChangedSince(ctx context.Context, client *imapc
 
 	fetchCmd := client.Fetch(uidSet, fetchOptions)
 
+	// Same skip-unchanged rule as syncMessageFlags: the server can report a
+	// message here that we already hold correctly (our own optimistic update
+	// landed first, or a repeated sweep), and writing it again is pure cost.
+	localFlags, err := e.messageStore.GetUIDFlags(folderID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load local flags: %w", err)
+	}
+
 	var flagUpdates []message.FlagUpdate
 	for {
 		msg := fetchCmd.Next()
@@ -247,7 +255,7 @@ func (e *Engine) syncMessageFlagsChangedSince(ctx context.Context, client *imapc
 			}
 		}
 
-		if fetchedUID > 0 {
+		if fetchedUID > 0 && flagsChanged(localFlags[fetchedUID], isRead, isStarred, isAnswered, isForwarded, isDraft, isDeleted) {
 			flagUpdates = append(flagUpdates, message.FlagUpdate{
 				UID:         fetchedUID,
 				IsRead:      isRead,

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 // The signal signature is the whole contract: a shell that cannot unpack it shows
@@ -47,6 +49,14 @@ func TestUpdateSignalReachesTheBus(t *testing.T) {
 		_ = mon.Wait()
 	}()
 	time.Sleep(700 * time.Millisecond) // let the monitor install its match rule
+
+	// Only the connection that owns the name emits the signals this test watches.
+	// A running app instance already owns it, so the badge under test would be
+	// silent and the assertion below would report a failure that is really just
+	// contention. Say so and skip instead of failing on the wrong thing.
+	if owner, err := nameOwner(); err == nil && owner != "" {
+		t.Skipf("%s is already owned by %s; close the running app first", nameLauncherEntry, owner)
+	}
 
 	b := New(desktopID)
 	if err := b.Start(); err != nil {
@@ -118,4 +128,17 @@ func TestUpdateSignalReachesTheBus(t *testing.T) {
 	if !strings.Contains(got, "'count-visible': <false>") {
 		t.Errorf("expected 'count-visible': <false> so the badge is hidden; got:\n%s", got)
 	}
+}
+
+// nameOwner reports the unique bus name currently holding nameLauncherEntry, or
+// "" when the name is unowned.
+func nameOwner() (string, error) {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return "", err
+	}
+	obj := conn.Object("org.freedesktop.DBus", dbus.ObjectPath("/org/freedesktop/DBus"))
+	var owner string
+	err = obj.Call("org.freedesktop.DBus.GetNameOwner", 0, nameLauncherEntry).Store(&owner)
+	return owner, err
 }

@@ -138,7 +138,7 @@ func runMainMode(mailtoData *app.MailtoData, rawMailtoArg string) {
 
 	// Create application with options
 	err = wails.Run(&options.App{
-		Title:                    "Email Hub",
+		Title:                    "Hsx2Mail",
 		Width:                    defW,
 		Height:                   defH,
 		MinWidth:                 360,

@@ -119,13 +119,13 @@
     "delete": {
       "title": "Xoá liên hệ này?",
       "descriptionLocal": "{name} sẽ bị xoá khỏi danh bạ máy. Email đã gửi tới địa chỉ này sẽ không bị ảnh hưởng.",
-      "descriptionCardDAV": "{name} sẽ bị xoá khỏi sổ địa chỉ trên máy chủ. Không thể hoàn tác thao tác này trong Email Hub."
+      "descriptionCardDAV": "{name} sẽ bị xoá khỏi sổ địa chỉ trên máy chủ. Không thể hoàn tác thao tác này trong Hsx2Mail."
     },
     "settings": {
       "title": "Cài đặt danh bạ",
       "description": "Cấu hình thông tin OAuth cho tiện ích Danh bạ. Quyền đọc dựa trên quyền hiện có của tài khoản thư; các thông tin này dùng để thực hiện thao tác GHI (chỉnh sửa, tạo mới và xoá) trên nguồn Google hoặc Microsoft.",
       "oauthHeading": "Thông tin OAuth",
-      "oauthDescription": "Mỗi ô đi kèm thông tin xác thực đã được Email Hub kiểm duyệt nếu có; chuyển sang Tuỳ chỉnh để nhập Client ID và Secret từ dự án của bạn.",
+      "oauthDescription": "Mỗi ô đi kèm thông tin xác thực đã được Hsx2Mail kiểm duyệt nếu có; chuyển sang Tuỳ chỉnh để nhập Client ID và Secret từ dự án của bạn.",
       "googleLabel": "Danh bạ Google",
       "microsoftLabel": "Danh bạ Microsoft",
       "writeAccessHeading": "Quyền ghi",

@@ -9,7 +9,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// google_convert.go: maps between contact.Record (the unified Email Hub shape) and
+// google_convert.go: maps between contact.Record (the unified Hsx2Mail shape) and
 // googlePerson (the People API request/response shape). Re-implemented inside
 // the extension package on purpose — the host-side READ parser in
 // internal/contact/google_sync.go is search-only (just resourceName + names +
@@ -39,12 +39,12 @@ func recordToGooglePerson(rec *contact.Record, log zerolog.Logger) *googlePerson
 		p.Names = []googleName{n}
 	}
 
-	// Nicknames — repeated, but Email Hub stores a single string.
+	// Nicknames — repeated, but Hsx2Mail stores a single string.
 	if rec.Nickname != "" {
 		p.Nicknames = []googleNickname{{Value: rec.Nickname}}
 	}
 
-	// Organizations + titles — Email Hub has a single Org/Title pair.
+	// Organizations + titles — Hsx2Mail has a single Org/Title pair.
 	if rec.Org != "" || rec.Title != "" {
 		p.Organizations = []googleOrganization{{Name: rec.Org, Title: rec.Title}}
 	}
@@ -54,7 +54,7 @@ func recordToGooglePerson(rec *contact.Record, log zerolog.Logger) *googlePerson
 		p.Biographies = []googleBiography{{Value: rec.Note, ContentType: "TEXT_PLAIN"}}
 	}
 
-	// Birthdays — singleton. Email Hub stores as "YYYY-MM-DD" or "--MM-DD" (vCard
+	// Birthdays — singleton. Hsx2Mail stores as "YYYY-MM-DD" or "--MM-DD" (vCard
 	// shorthand for no year). Best-effort parse; fall back to text on failure.
 	if rec.Bday != "" {
 		if bd := parseGoogleBirthday(rec.Bday); bd != nil {
@@ -218,7 +218,7 @@ func googlePersonToRecord(p *googlePerson) *contact.Record {
 //
 // The alternative (mask only the diff) requires loading the server state
 // before the patch — extra round-trip per update. We prefer "send the whole
-// known state" because Email Hub's ContactPatch already collapses partial edits
+// known state" because Hsx2Mail's ContactPatch already collapses partial edits
 // into a full intended state via applyContactPatchToRecord.
 func fieldMaskForRecord(rec *contact.Record) string {
 	if rec == nil {
@@ -279,7 +279,7 @@ func etagFromPerson(p *googlePerson) string {
 
 // ---- helpers ---------------------------------------------------------------
 
-// mapTypeToGoogle translates an Email Hub-side type label (vCard-flavored) into
+// mapTypeToGoogle translates an Hsx2Mail-side type label (vCard-flavored) into
 // Google's preferred lower-case enum-style label. Google accepts arbitrary
 // strings ("custom") so unknowns pass through unchanged.
 func mapTypeToGoogle(t string) string {
@@ -300,7 +300,7 @@ func mapTypeFromGoogle(t string) string {
 	return strings.ToLower(strings.TrimSpace(t))
 }
 
-// splitIMPP splits Email Hub's "protocol:handle" IMPP storage into Google's
+// splitIMPP splits Hsx2Mail's "protocol:handle" IMPP storage into Google's
 // separate Protocol + Username fields. When the handle has no scheme prefix,
 // the protocol comes back empty — Google still accepts that.
 func splitIMPP(handle string) (username, protocol string) {

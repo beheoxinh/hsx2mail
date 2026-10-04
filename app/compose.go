@@ -134,14 +134,22 @@ func (ops *composeOps) getValidOAuthToken(ctx context.Context, accountID string)
 			Str("account_id", accountID).
 			Msg("OAuth token refresh failed")
 
-		// Emit event for frontend to prompt re-authorization
-		wailsRuntime.EventsEmit(ctx, "oauth:reauth-required", map[string]interface{}{
-			"accountId": accountID,
-			"provider":  tokens.Provider,
-			"error":     err.Error(),
-		})
+		// Only prompt for re-authorization when the failure is terminal
+		// (invalid_grant / invalid_client). A network blip or a 5xx must stay
+		// on the retry path — prompting there trains the user to ignore the
+		// dialog, which is worse than never showing it.
+		if oauth2.IsReauthRequired(err) {
+			if ctx != nil {
+				wailsRuntime.EventsEmit(ctx, "oauth:reauth-required", map[string]interface{}{
+					"accountId": accountID,
+					"provider":  tokens.Provider,
+					"error":     err.Error(),
+				})
+			}
+			return nil, fmt.Errorf("OAuth token refresh failed, re-authorization required: %w", err)
+		}
 
-		return nil, fmt.Errorf("OAuth token refresh failed, re-authorization required: %w", err)
+		return nil, fmt.Errorf("OAuth token refresh failed (retryable): %w", err)
 	}
 
 	// Calculate new expiry time

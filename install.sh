@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — build Email Hub and install (or overwrite) it on this Linux box.
+# install.sh — build Hsx2Mail and install (or overwrite) it on this Linux box.
 #
 # Safe to re-run: it replaces an existing installation in place and leaves user
 # data (~/.local/share/hsx2mail, ~/.config/hsx2mail) untouched.
@@ -138,7 +138,6 @@ find_icon_source() {
 		"build/linux/${ICON_FILE}"
 		"build/linux/hsx2mail.png"
 		"brand/icon.png"
-		"brand/icon-beautyline.png"
 	)
 	local f
 	for f in "${candidates[@]}"; do
@@ -452,7 +451,7 @@ verify_install() {
 # ── main ─────────────────────────────────────────────────────────────────────
 
 main() {
-	printf '%s%sEmail Hub — install%s\n\n' "$C_BLD" "$C_BLU" "$C_OFF"
+	printf '%s%sHsx2Mail — install%s\n\n' "$C_BLD" "$C_BLU" "$C_OFF"
 
 	if ((DO_UNINSTALL)); then
 		do_uninstall

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Email Hub in development mode (Vite hot-reload + Wails dev).
+# Run Hsx2Mail in development mode (Vite hot-reload + Wails dev).
 # Wraps `make dev` — OAuth ldflags loaded from .env/.env.local.
 set -euo pipefail
 cd "$(dirname "$0")"

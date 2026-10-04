@@ -119,13 +119,13 @@
     "delete": {
       "title": "Eliminare questo contatto??",
       "descriptionLocal": "{name} verrà rimosso dai tuoi contatti locali. Le e-mail già inviate a questo indirizzo non subiranno alcuna modifica.",
-      "descriptionCardDAV": "{name} verrà rimosso da questa rubrica sul server. Questa operazione non può essere annullata da Email Hub."
+      "descriptionCardDAV": "{name} verrà rimosso da questa rubrica sul server. Questa operazione non può essere annullata da Hsx2Mail."
     },
     "settings": {
       "title": "Impostazioni dei contatti",
       "description": "Configura le credenziali OAuth per l'estensione Contatti. L'accesso in lettura si basa sulle autorizzazioni esistenti del tuo account di posta; queste credenziali consentono le operazioni di SCRITTURA (modifica / creazione / eliminazione) sulle fonti Google o Microsoft.",
       "oauthHeading": "Credenziali OAuth",
-      "oauthDescription": "Ogni slot viene fornito con le credenziali verificate da Email Hub, se disponibili; seleziona “Personalizza” per inserire l'ID cliente e la chiave segreta del tuo progetto.",
+      "oauthDescription": "Ogni slot viene fornito con le credenziali verificate da Hsx2Mail, se disponibili; seleziona “Personalizza” per inserire l'ID cliente e la chiave segreta del tuo progetto.",
       "googleLabel": "Contatti Google",
       "microsoftLabel": "Contatti Microsoft",
       "writeAccessHeading": "Accesso in scrittura",

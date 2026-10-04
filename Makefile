@@ -1,4 +1,4 @@
-# Email Hub Email Client - Build System
+# Hsx2Mail Email Client - Build System
 # 
 # Usage:
 #   make build    - Build production binary
@@ -29,19 +29,19 @@ MODULE := github.com/beheoxinh/hsx2mail
 #                               manifest declares in
 #                               first_party_uses_core_for_scopes (today:
 #                               contacts.readonly). Surfaced as
-#                               "Email Hub - Google" in the picker.
+#                               "Hsx2Mail - Google" in the picker.
 #   MICROSOFT_CLIENT_ID       — mail's Azure AD app registration. Also
 #                               backs microsoft-contacts and
 #                               microsoft-calendar (Microsoft Graph
 #                               doesn't gate scopes behind verification).
-#                               Surfaced as "Email Hub - Microsoft".
+#                               Surfaced as "Hsx2Mail - Microsoft".
 #   GOOGLE_TESTING_CLIENT_ID/SECRET — shared un-Google-verified test
 #                               project for extensions that need broader
 #                               scopes than the mail project carries
 #                               (contacts.readwrite, full Calendar).
 #                               Single client backs google-contacts AND
 #                               google-calendar slots. Surfaced as
-#                               "Email Hub - Google (Testing)".
+#                               "Hsx2Mail - Google (Testing)".
 LDFLAGS := -X '$(MODULE)/internal/oauth2.GoogleClientID=$(GOOGLE_CLIENT_ID)' \
            -X '$(MODULE)/internal/oauth2.GoogleClientSecret=$(GOOGLE_CLIENT_SECRET)' \
            -X '$(MODULE)/internal/oauth2.MicrosoftClientID=$(MICROSOFT_CLIENT_ID)' \
@@ -75,16 +75,16 @@ all: build
 # and also builds the OAuth credential helper the app looks for next to itself.
 # One build path keeps `make build` and ./build.sh from disagreeing.
 build:
-	@echo "Building Email Hub..."
+	@echo "Building Hsx2Mail..."
 	./build.sh
 ifeq ($(UNAME_S),Darwin)
-	@echo "Ad-hoc signing Email Hub.app (required for macOS notifications)..."
+	@echo "Ad-hoc signing Hsx2Mail.app (required for macOS notifications)..."
 	codesign --force --deep --sign - build/bin/Hsx2Mail.app
 endif
 
 # Build for Linux specifically -- same single build path as `make build`.
 build-linux:
-	@echo "Building Email Hub for Linux..."
+	@echo "Building Hsx2Mail for Linux..."
 	./build.sh
 
 # Build Flatpak (recommended for Linux distribution)
@@ -102,7 +102,7 @@ flatpak-dev:
 # Runs through the shared toolchain resolver first, so `wails dev` uses the Go
 # that go.mod pins instead of whatever `go` happens to be first on PATH.
 dev:
-	@echo "Starting Email Hub in development mode..."
+	@echo "Starting Hsx2Mail in development mode..."
 	@. ./scripts/toolchain.sh && select_go >/dev/null && wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS)
 
 # Run in development mode with Go's race detector enabled. Builds significantly
@@ -111,7 +111,7 @@ dev:
 # shared-memory access. Use this when chasing a suspected data race —
 # reproduce the crash and the detector report points right at it.
 dev-race:
-	@echo "Starting Email Hub in development mode with -race..."
+	@echo "Starting Hsx2Mail in development mode with -race..."
 	@. ./scripts/toolchain.sh && select_go >/dev/null && wails dev -ldflags "$(LDFLAGS)" -tags $(BUILD_TAGS) -race
 
 # Generate Wails TypeScript bindings
@@ -243,9 +243,9 @@ endif
 
 ## Linux Installation
 
-# Install Email Hub on Linux
+# Install Hsx2Mail on Linux
 install-linux: build
-	@echo "Installing Email Hub to $(DESTDIR)$(PREFIX)..."
+	@echo "Installing Hsx2Mail to $(DESTDIR)$(PREFIX)..."
 	install -Dm755 build/bin/hsx2mail "$(DESTDIR)$(PREFIX)/bin/hsx2mail"
 	install -Dm644 build/appicon.png "$(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/io.github.beheoxinh.Hsx2Mail.png"
 	install -Dm644 build/linux/hsx2mail.desktop "$(DESTDIR)$(PREFIX)/share/applications/io.github.beheoxinh.Hsx2Mail.desktop"
@@ -255,12 +255,12 @@ install-linux: build
 	@echo "Installation complete!"
 	@echo "You may need to log out and back in for the application to appear in your menu."
 	@echo ""
-	@echo "To set Email Hub as your default email client:"
+	@echo "To set Hsx2Mail as your default email client:"
 	@echo "  xdg-mime default io.github.beheoxinh.Hsx2Mail.desktop x-scheme-handler/mailto"
 
-# Uninstall Email Hub from Linux
+# Uninstall Hsx2Mail from Linux
 uninstall-linux:
-	@echo "Uninstalling Email Hub from $(DESTDIR)$(PREFIX)..."
+	@echo "Uninstalling Hsx2Mail from $(DESTDIR)$(PREFIX)..."
 	rm -f "$(DESTDIR)$(PREFIX)/bin/hsx2mail"
 	rm -f "$(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/io.github.beheoxinh.Hsx2Mail.png"
 	rm -f "$(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/hsx2mail.png"  # Remove old name if it exists
@@ -271,9 +271,9 @@ uninstall-linux:
 
 ## macOS Installation
 
-# Install Email Hub on macOS
+# Install Hsx2Mail on macOS
 install-darwin: build
-	@echo "Installing Email Hub.app to /Applications..."
+	@echo "Installing Hsx2Mail.app to /Applications..."
 	@if [ -d "/Applications/Hsx2Mail.app" ]; then \
 		echo "Removing existing installation..."; \
 		rm -rf "/Applications/Hsx2Mail.app"; \
@@ -283,11 +283,11 @@ install-darwin: build
 	codesign --force --deep --sign - "/Applications/Hsx2Mail.app"
 	@echo ""
 	@echo "Installation complete!"
-	@echo "Email Hub is now available in /Applications."
+	@echo "Hsx2Mail is now available in /Applications."
 
-# Uninstall Email Hub from macOS
+# Uninstall Hsx2Mail from macOS
 uninstall-darwin:
-	@echo "Uninstalling Email Hub from /Applications..."
+	@echo "Uninstalling Hsx2Mail from /Applications..."
 	rm -rf "/Applications/Hsx2Mail.app"
 	@echo "Uninstallation complete!"
 

@@ -195,7 +195,7 @@ func (s *CallbackServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 const successPageHTML = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Email Hub - Authentication Successful</title>
+    <title>Hsx2Mail - Authentication Successful</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -248,7 +248,7 @@ const successPageHTML = `<!DOCTYPE html>
             </svg>
         </div>
         <h1>Authentication Successful</h1>
-        <p>You can close this window and return to Email Hub.</p>
+        <p>You can close this window and return to Hsx2Mail.</p>
     </div>
 </body>
 </html>`
@@ -256,7 +256,7 @@ const successPageHTML = `<!DOCTYPE html>
 const errorPageHTML = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Email Hub - Authentication Failed</title>
+    <title>Hsx2Mail - Authentication Failed</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -323,7 +323,7 @@ const errorPageHTML = `<!DOCTYPE html>
             </svg>
         </div>
         <h1>Authentication Failed</h1>
-        <p>Please close this window and try again in Email Hub.</p>
+        <p>Please close this window and try again in Hsx2Mail.</p>
         <div class="error-details">
             <span class="error-code">%s</span>: %s
         </div>
@@ -334,7 +334,7 @@ const errorPageHTML = `<!DOCTYPE html>
 const waitingPageHTML = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Email Hub - OAuth Callback</title>
+    <title>Hsx2Mail - OAuth Callback</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -351,7 +351,7 @@ const waitingPageHTML = `<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>Email Hub OAuth</h1>
+        <h1>Hsx2Mail OAuth</h1>
         <p>Waiting for authentication...</p>
     </div>
 </body>

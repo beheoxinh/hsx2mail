@@ -81,22 +81,84 @@ func filterWhereClause(filter, prefix string) string {
 // queries group by, so it is unique per group and orders groups rather than
 // individual messages.
 const (
-	orderDateDesc      = "ORDER BY date DESC, id ASC"
-	orderLatestNewest  = "ORDER BY latest_date DESC, conv_thread_id ASC"
-	orderLatestOldest  = "ORDER BY latest_date ASC, conv_thread_id ASC"
-	orderInboxNewest   = "ORDER BY latest_date DESC, conv_thread_id ASC, a.id ASC"
-	orderInboxOldest   = "ORDER BY latest_date ASC, conv_thread_id ASC, a.id ASC"
-	orderConvAsc       = "ORDER BY m.date ASC, m.id ASC"
-	orderConvFTSNewest = "ORDER BY latest_date DESC, conv_thread_id ASC"
+	orderDateDesc     = "ORDER BY date DESC, id ASC"
+	orderLatestNewest = "ORDER BY latest_date DESC, conv_thread_id ASC"
+	orderLatestOldest = "ORDER BY latest_date ASC, conv_thread_id ASC"
+	// The (unread_count > 0) term is what actually partitions: conversations with
+	// nothing unread sort after the ones with something, and the date terms keep
+	// both groups in recency order so paging stays stable.
+	//
+	// unread_count is used as an output alias here, which only works because this
+	// query joins no tables - see orderInboxUnreadFirst for the trap that makes
+	// the same alias wrong in the unified inbox.
+	orderLatestUnreadFirst = "ORDER BY (unread_count > 0) DESC, latest_date DESC, conv_thread_id ASC"
+	orderInboxNewest       = "ORDER BY latest_date DESC, conv_thread_id ASC, a.id ASC"
+	orderInboxOldest       = "ORDER BY latest_date ASC, conv_thread_id ASC, a.id ASC"
+	// Same unread-first rule as orderLatestUnreadFirst, plus a.id because the
+	// unified inbox groups per account and can therefore emit several rows
+	// sharing one conversation id.
+	//
+	// The aggregate is repeated instead of using the unread_count alias on
+	// purpose. This query joins folders, which has a real unread_count column,
+	// and SQLite only resolves an output alias for a bare identifier in ORDER BY
+	// - nested inside an expression it binds to the table column instead. Writing
+	// the alias here would silently sort by the folder's cached count and keep
+	// the view in plain recency order.
+	orderInboxUnreadFirst = "ORDER BY (SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) > 0) DESC, latest_date DESC, conv_thread_id ASC, a.id ASC"
+	orderConvAsc          = "ORDER BY m.date ASC, m.id ASC"
+	orderConvFTSNewest    = "ORDER BY latest_date DESC, conv_thread_id ASC"
 )
 
 // orderByLatest returns the conversation ordering for a sort order, including
 // the deterministic tiebreaker.
-func orderByLatest(sortOrder string) string {
-	if sortOrder == "oldest" {
-		return orderLatestOldest
+// convListOrders is the single source of truth for how many conversation-list
+// orderings exist; the prebuild loop below walks it to emit one prepared
+// statement per (order x toList x filter) combination.
+var convListOrders = [3]string{
+	orderLatestNewest,
+	orderLatestOldest,
+	orderLatestUnreadFirst,
+}
+
+// convListInboxOrders parallels convListOrders for the unified inbox, which needs
+// its own set because it groups across accounts.
+var convListInboxOrders = [3]string{
+	orderInboxNewest,
+	orderInboxOldest,
+	orderInboxUnreadFirst,
+}
+
+// Positions into convListOrders. Kept next to the slice so the SQL prebuild loop
+// below can use the loop index directly as the key.
+const (
+	convListOrderNewest = iota
+	convListOrderOldest
+	convListOrderUnreadFirst
+)
+
+func orderByInbox(sortOrder string) string {
+	if o, ok := convListOrderIndex[sortOrder]; ok {
+		return convListInboxOrders[o]
 	}
-	return orderLatestNewest
+	return convListInboxOrders[convListOrderUnreadFirst]
+}
+
+func orderByLatest(sortOrder string) string {
+	if o, ok := convListOrderIndex[sortOrder]; ok {
+		return convListOrders[o]
+	}
+	return convListOrders[convListOrderUnreadFirst]
+}
+
+// convListOrderIndex maps a sort-order setting onto its position in
+// convListOrders. An unrecognised or empty value deliberately falls through to
+// the default rather than to plain newest: the default is unread-first, and a
+// caller that never set the setting should get the same thing a fresh install
+// gets.
+var convListOrderIndex = map[string]int{
+	"newest":       convListOrderNewest,
+	"oldest":       convListOrderOldest,
+	"unread-first": convListOrderUnreadFirst,
 }
 
 // Precomputed conversation-list SQL (2-11).
@@ -118,8 +180,10 @@ const (
 
 // convListSQLKey identifies one of the 16 conversation-list statements.
 type convListSQLKey struct {
-	toList  bool
-	oldest  bool
+	toList bool
+	// order indexes convListOrder; an int because there are three orderings and
+	// two bools would not compose without a third field.
+	order   int
 	unread  bool
 	starred bool
 	attach  bool
@@ -131,7 +195,7 @@ var convListSQL = buildConvListSQL()
 
 func buildConvListSQL() map[convListSQLKey]string {
 	participants := [2]string{participantsFrom, participantsTo}
-	orders := [2]string{orderLatestNewest, orderLatestOldest}
+	orders := convListOrders
 	filters := [4]string{"", " HAVING SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) > 0",
 		" HAVING MAX(CASE WHEN is_starred = 1 THEN 1 ELSE 0 END) = 1",
 		" HAVING MAX(CASE WHEN has_attachments = 1 THEN 1 ELSE 0 END) = 1"}
@@ -141,7 +205,7 @@ func buildConvListSQL() map[convListSQLKey]string {
 		for o := range orders {
 			for f, having := range filters {
 				key := convListSQLKey{
-					toList: tl == 1, oldest: o == 1,
+					toList: tl == 1, order: o,
 					unread: f == 1, starred: f == 2, attach: f == 3,
 				}
 				out[key] = `SELECT
@@ -171,7 +235,13 @@ func buildConvListSQL() map[convListSQLKey]string {
 // filter flags mirror filterHavingClause's switch exactly, including its
 // default branch (an unknown filter means no HAVING clause).
 func convListSQLFor(useToList bool, sortOrder, filter string) string {
-	key := convListSQLKey{toList: useToList, oldest: sortOrder == "oldest"}
+	// Resolve the ordering first so an unknown setting lands on the default
+	// instead of silently behaving like "newest".
+	o, ok := convListOrderIndex[sortOrder]
+	if !ok {
+		o = convListOrderUnreadFirst
+	}
+	key := convListSQLKey{toList: useToList, order: o}
 	switch filter {
 	case "unread":
 		key.unread = true
@@ -271,10 +341,7 @@ func (s *Store) ListByFolder(folderID string, offset, limit int) ([]*MessageHead
 // ListConversationsUnifiedInbox returns conversations from all inbox folders across all accounts
 // This is used for the unified inbox view
 func (s *Store) ListConversationsUnifiedInbox(offset, limit int, sortOrder, filter string) ([]*Conversation, error) {
-	orderClause := orderInboxNewest
-	if sortOrder == "oldest" {
-		orderClause = orderInboxOldest
-	}
+	orderClause := orderByInbox(sortOrder)
 
 	// Query conversations from all inbox folders, joining with accounts for name and color
 	query := `
@@ -945,6 +1012,34 @@ type FlagUpdate struct {
 	IsDeleted   bool
 }
 
+// GetUIDFlags returns the flag state of every message in a folder, keyed by
+// UID. Callers use it to skip writing rows whose flags already match what the
+// server just reported, which on a reconcile of a quiet mailbox is nearly all
+// of them. One indexed query, no per-message round trip.
+func (s *Store) GetUIDFlags(folderID string) (map[uint32]FlagUpdate, error) {
+	rows, err := s.db.Query(
+		`SELECT uid, is_read, is_starred, is_answered, is_forwarded, is_draft, is_deleted
+		 FROM messages WHERE folder_id = ? AND uid > 0`, folderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query uid flags: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[uint32]FlagUpdate)
+	for rows.Next() {
+		var u FlagUpdate
+		if err := rows.Scan(&u.UID, &u.IsRead, &u.IsStarred, &u.IsAnswered,
+			&u.IsForwarded, &u.IsDraft, &u.IsDeleted); err != nil {
+			return nil, fmt.Errorf("failed to scan uid flags: %w", err)
+		}
+		out[u.UID] = u
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate uid flags: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateFlagsByUIDBatch updates flags for multiple messages in a single transaction.
 // This is much more efficient than calling UpdateFlagsByUID repeatedly.
 func (s *Store) UpdateFlagsByUIDBatch(folderID string, updates []FlagUpdate) error {
@@ -1240,7 +1335,14 @@ func (s *Store) HasCopiesInOtherFolders(messageIDHeader string, excludeFolderID 
 
 // GetAllUIDs returns all UIDs for a folder
 func (s *Store) GetAllUIDs(folderID string) ([]uint32, error) {
-	rows, err := s.db.Query("SELECT uid FROM messages WHERE folder_id = ? AND uid > 0", folderID)
+	// ORDER BY is not cosmetic: callers merge this against the server's sorted
+	// UID list with a two-pointer pass, and the flag reconciler turns it into an
+	// IMAP UID SET. Ascending order keeps that merge correct and lets the wire
+	// form collapse runs of neighbours into ranges instead of listing every
+	// sequence number. Scanning UNIQUE(folder_id, uid) happens to return this
+	// order today, but relying on an index's traversal order is not something the
+	// caller can see, so it is stated here.
+	rows, err := s.db.Query("SELECT uid FROM messages WHERE folder_id = ? AND uid > 0 ORDER BY uid", folderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query UIDs: %w", err)
 	}

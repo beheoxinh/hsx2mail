@@ -190,7 +190,7 @@ and **no `update-desktop-database`**. Fine for a dev-only artifact.
 | `build/linux/hsx2mail.png` | — | 256×256, byte-identical to `build/appicon.png` |
 | `build/appicon.png` | — | 256×256, installed as `io.github.beheoxinh.Hsx2Mail.png` |
 | `brand/icon.png` | — | 256×256, different from `appicon.png` |
-| `brand/icon-beautyline.png` | — | variant |
+| `brand/icon-512.png` | — | variant |
 | `build/windows/icon.ico` | 107 KB | Windows |
 | `build/darwin/Info.plist`, `Info.dev.plist` | — | macOS bundles |
 

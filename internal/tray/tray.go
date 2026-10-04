@@ -16,8 +16,24 @@ import (
 	"fyne.io/systray"
 )
 
-//go:embed icon.png
-var iconPNG []byte
+// Two mail states crossed with the two OS colour schemes. A tray icon has no
+// window behind it, so black artwork vanishes into a dark panel; the envelope
+// strokes are therefore drawn white for a dark desktop, while the tick and the
+// dot keep their colour because those carry meaning, not contrast. Rasterised
+// from brand/tray-read.svg and brand/tray-unread.svg by
+// build/icons/generate-icons.sh.
+//
+//go:embed icon-read.png
+var iconReadPNG []byte
+
+//go:embed icon-read-dark.png
+var iconReadDarkPNG []byte
+
+//go:embed icon-unread.png
+var iconUnreadPNG []byte
+
+//go:embed icon-unread-dark.png
+var iconUnreadDarkPNG []byte
 
 // Callbacks are invoked on their own goroutine, never on the tray event loop.
 type Callbacks struct {
@@ -27,6 +43,56 @@ type Callbacks struct {
 	Sync func()
 	// Quit performs an orderly application shutdown.
 	Quit func()
+}
+
+// The two live states. Both default to false, which is the light-scheme
+// "inbox clear" icon: the safe default before anything has been counted, and the
+// one that reads correctly on a light desktop.
+var (
+	unread atomic.Bool
+	dark   atomic.Bool
+)
+
+// iconFor picks the tray artwork for the given mail and colour-scheme states.
+func iconFor(hasUnread, isDark bool) []byte {
+	switch {
+	case hasUnread && isDark:
+		return iconUnreadDarkPNG
+	case hasUnread:
+		return iconUnreadPNG
+	case isDark:
+		return iconReadDarkPNG
+	default:
+		return iconReadPNG
+	}
+}
+
+// publish pushes the current state to the shell. Safe before Start and from any
+// goroutine: fyne systray keeps the payload and does nothing until its event
+// loop exists.
+func publish() {
+	systray.SetIcon(iconFor(unread.Load(), dark.Load()))
+}
+
+// SetUnread switches the tray icon between the two mail states: a red dot while
+// mail is waiting, a green tick once the inbox is clear. A no-op when the state
+// has not changed, so callers can invoke it on every sync without spamming the
+// StatusNotifierItem bus.
+func SetUnread(hasUnread bool) {
+	if unread.Swap(hasUnread) {
+		return
+	}
+	publish()
+}
+
+// SetDark switches the tray artwork between the light-scheme (black strokes) and
+// dark-scheme (white strokes) renderings. Like SetUnread it is a no-op when
+// nothing changed, and safe to call before Start.
+func SetDark(isDark bool) {
+	if dark.Swap(isDark) {
+		return
+	}
+	publish()
 }
 
 var started atomic.Bool
@@ -51,14 +117,14 @@ func Start(cb Callbacks) {
 
 	go func() {
 		systray.Run(func() {
-			systray.SetIcon(iconPNG)
-			systray.SetTitle("Email Hub")
-			systray.SetTooltip("Email Hub")
+			publish()
+			systray.SetTitle("Hsx2Mail")
+			systray.SetTooltip("Hsx2Mail")
 
-			show := addItem("Open Email Hub", "Show the window", cb.Show)
-			syncNow := addItem("Sync now", "Check all accounts for new mail", cb.Sync)
+			show := addItem("Show Mail Client", "Show the window", cb.Show)
+			syncNow := addItem("Sync All Mail Now", "Check all accounts for new mail", cb.Sync)
 			systray.AddSeparator()
-			quit := addItem("Quit", "Exit Email Hub", cb.Quit)
+			quit := addItem("Quit", "Exit Hsx2Mail", cb.Quit)
 
 			go func() {
 				// A nil item is a disabled entry: skip it rather than block.

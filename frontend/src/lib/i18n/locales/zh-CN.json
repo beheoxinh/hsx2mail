@@ -78,6 +78,7 @@
     "loadMore": "加载更多（剩余 {remaining} 条）",
     "showingNewest": "显示最新优先",
     "showingOldest": "显示最旧优先",
+    "showingUnreadFirst": "未读优先显示",
     "foundIn": "在 {folder} 中找到",
     "encryptedContent": "(加密内容)",
     "noContent": "(无内容)",

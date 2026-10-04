@@ -3,7 +3,7 @@
   "name": "Calendar",
   "version": "0.1.0",
   "description": "View and (later) edit calendar events from CalDAV, Google Calendar, and Microsoft 365. Phase 1 ships read-only CalDAV.",
-  "author": "Email Hub",
+  "author": "Hsx2Mail",
   "minHsx2MailVersion": "0.3.0",
   "capabilities": [
     "calendar.read",

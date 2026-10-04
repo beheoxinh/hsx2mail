@@ -1,4 +1,4 @@
-// Package smtp provides SMTP client functionality for Email Hub
+// Package smtp provides SMTP client functionality for Hsx2Mail
 package smtp
 
 import (
@@ -194,7 +194,7 @@ func (m *ComposeMessage) ToRFC822() ([]byte, error) {
 	writeHeader(&buf, "Date", time.Now().Format(time.RFC1123Z))
 	writeHeader(&buf, "Message-ID", messageID)
 	writeHeader(&buf, "MIME-Version", "1.0")
-	writeHeader(&buf, "User-Agent", "Email Hub Mail Client")
+	writeHeader(&buf, "User-Agent", "Hsx2Mail Mail Client")
 
 	// Threading headers
 	if m.InReplyTo != "" {

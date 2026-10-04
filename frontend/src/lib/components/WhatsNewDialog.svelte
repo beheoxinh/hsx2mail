@@ -1,6 +1,6 @@
 <script lang="ts">
   // Per-version release announcement. Shown once after the user upgrades
-  // to a new Email Hub version. Only the explicit OK click records
+  // to a new Hsx2Mail version. Only the explicit OK click records
   // acknowledgement (via onAcknowledge → SetLastSeenVersion in App.svelte).
   // Closing via ESC or outside-click leaves the version unrecorded, so
   // the dialog fires again on next launch.
@@ -48,7 +48,7 @@
       </div>
 
       <div class="space-y-4 max-h-[60vh] overflow-y-auto text-sm">
-        <p>🚀 Welcome to Email Hub v0.3.2!</p>
+        <p>🚀 Welcome to Hsx2Mail v0.3.2!</p>
 
         <p>Here are the highlights of this release:</p>
 

@@ -33,7 +33,7 @@ func NewExtension() *Extension {
 func (e *Extension) Manifest() coreapi.Manifest { return e.manifest }
 
 // Register wires the Contacts extension's UI surfaces (rail tab + account-setup
-// hook). Runs once per Email Hub process lifetime, at App.Startup, regardless of
+// hook). Runs once per Hsx2Mail process lifetime, at App.Startup, regardless of
 // whether the extension is currently enabled — descriptive registrations
 // persist across enable/disable cycles. The frontend filters by enabled
 // state at render time.

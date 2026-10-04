@@ -22,7 +22,7 @@ func NewAutostartManager() AutostartManager {
 	return &windowsAutostartManager{}
 }
 
-// Enable adds a registry entry to start Email Hub on login.
+// Enable adds a registry entry to start Hsx2Mail on login.
 func (m *windowsAutostartManager) Enable() error {
 	log := logging.WithComponent("autostart")
 

@@ -18,7 +18,7 @@
   //
   // CONTAINING-BLOCK CAVEAT: position: fixed is relative to the viewport
   // ONLY when no ancestor has transform/filter/perspective/contain:
-  // layout|paint/will-change. The Email Hub ancestry (App.svelte → rail/pane
+  // layout|paint/will-change. The Hsx2Mail ancestry (App.svelte → rail/pane
   // tree → consumer pane) currently has none of those. If a future PR
   // introduces one, this overlay would mis-position. Test before adding
   // any of those properties to wrapping divs.

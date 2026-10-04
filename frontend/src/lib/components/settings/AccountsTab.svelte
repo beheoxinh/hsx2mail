@@ -160,7 +160,7 @@
     </div>
   {/if}
 
-  <!-- Email Hub core OAuth credentials (advanced, collapsed by default) -->
+  <!-- Hsx2Mail core OAuth credentials (advanced, collapsed by default) -->
   <Hsx2MailCoreOAuthSection />
 </div>
 

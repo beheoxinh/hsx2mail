@@ -1,5 +1,5 @@
 // Package ipc provides inter-process communication infrastructure
-// for multi-window support in the Email Hub email client.
+// for multi-window support in the Hsx2Mail email client.
 //
 // It supports Unix sockets on Linux/macOS and named pipes on Windows,
 // enabling bidirectional communication between the main window and

@@ -1,4 +1,4 @@
-// Package imap provides IMAP client functionality for Email Hub
+// Package imap provides IMAP client functionality for Hsx2Mail
 package imap
 
 import (

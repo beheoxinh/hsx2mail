@@ -17,6 +17,7 @@
   import { message } from '../../../../wailsjs/go/models'
   // @ts-ignore - wailsjs runtime
   import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime'
+  import type { MessageListSortOrder } from '$lib/stores/settings.svelte'
   import { getMessageListDensity, getMessageListSortOrder, setMessageListSortOrder, getShowMessageListProfilePics } from '$lib/stores/settings.svelte'
   import { contactPhotos } from '$lib/stores/contactPhotos.svelte'
   import { accountStore } from '$lib/stores/accounts.svelte'
@@ -308,6 +309,15 @@
     // Only reset and reload if folder actually changed
     if (currentAccount === prevAccountId && currentFolder === prevFolderId) return
 
+    // Reset the scroll offset before anything is loaded. Without this the
+    // container keeps the scroll position it had in the folder being left, the
+    // virtualizer computes its window from that stale offset, and the rows above
+    // it are never mounted - so the list opens with blank space where the
+    // previous folder's rows used to be. Done here, before loadConversations(),
+    // so the first window is already computed from offset 0.
+    if (listContainerRef) listContainerRef.scrollTop = 0
+    $rowVirtualizer.scrollToOffset(0)
+
     prevAccountId = currentAccount
     prevFolderId = currentFolder
     loadGeneration++ // Invalidate any in-flight loads from the previous folder (#200)
@@ -327,6 +337,22 @@
     lastServerQuery = ''
     loadConversations()
     checkFTSIndexStatus()
+    // Opening a folder should show what is actually on the server, not whatever
+    // the last fetch left in SQLite. Fires on any real folder change, not just
+    // sidebar clicks, so keyboard nav and deep links behave the same. The
+    // folder:synced listener above reloads once the fetch lands; the backend
+    // debounces repeat requests and cancels a still-running sync of this folder.
+    //
+    // SyncFolder is called directly rather than through syncFolder(): that one
+    // raises the "failed to load messages" banner, which is right for a sync the
+    // user asked for but wrong here. This is a background refresh on top of a
+    // load that already succeeded, so being offline should log and leave the
+    // cached list on screen.
+    if (!isUnifiedView && accountId && folderId) {
+      SyncFolder(accountId, folderId).catch((err) =>
+        console.error('Auto-sync on folder open failed:', err)
+      )
+    }
   })
 
   // Compute selected message IDs from all checked conversations (for multi-select context menu)
@@ -933,9 +959,31 @@
     })
   }
 
+  // Presentation for the sort-order button. Kept as two small functions rather
+  // than nested ternaries inline in the template: with three states the inline
+  // version stops being readable at a glance.
+  function sortOrderIcon(order: MessageListSortOrder): string {
+    if (order === 'oldest') return 'mdi:sort-ascending'
+    if (order === 'unread-first') return 'mdi:email-mark-as-unread'
+    return 'mdi:sort-descending'
+  }
+
+  function sortOrderLabel(order: MessageListSortOrder): string {
+    if (order === 'oldest') return $_('messageList.showingOldest')
+    if (order === 'unread-first') return $_('messageList.showingUnreadFirst')
+    return $_('messageList.showingNewest')
+  }
+
   // Toggle sort order and persist to backend
   async function toggleSortOrder() {
-    const newOrder = getMessageListSortOrder() === 'newest' ? 'oldest' : 'newest'
+    // Cycle unread-first -> newest -> oldest. A three-state cycle rather than a
+    // two-state toggle, because 'unread first' is the mode worth reaching in one
+    // click instead of two. It leads the cycle because it is the default, so a
+    // single click from a fresh install lands on plain recency rather than
+    // skipping past it.
+    const order = getMessageListSortOrder()
+    const newOrder: MessageListSortOrder =
+      order === 'unread-first' ? 'newest' : order === 'newest' ? 'oldest' : 'unread-first'
     try {
       await SetMessageListSortOrder(newOrder)
       setMessageListSortOrder(newOrder)
@@ -1541,11 +1589,11 @@
       </DropdownMenu.Root>
       <button
         class="p-2 rounded-md hover:bg-muted transition-colors"
-        title={getMessageListSortOrder() === 'newest' ? $_('messageList.showingNewest') : $_('messageList.showingOldest')}
+        title={sortOrderLabel(getMessageListSortOrder())}
         onclick={toggleSortOrder}
       >
         <Icon
-          icon={getMessageListSortOrder() === 'newest' ? 'mdi:sort-descending' : 'mdi:sort-ascending'}
+          icon={sortOrderIcon(getMessageListSortOrder())}
           class="w-5 h-5 text-muted-foreground"
         />
       </button>

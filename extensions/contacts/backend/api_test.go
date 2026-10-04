@@ -641,7 +641,7 @@ func TestAPI_CreateContact_Conflict(t *testing.T) {
 func TestAPI_CreateContact_UnknownSourceErrors(t *testing.T) {
 	// Post-Track-B: unknown CardDAV-shaped source UUIDs surface a "not found"
 	// error rather than ErrUnimplemented. ErrUnimplemented is reserved for
-	// known sources of types Email Hub hasn't wired write paths for (Google /
+	// known sources of types Hsx2Mail hasn't wired write paths for (Google /
 	// Microsoft); see TestAPI_CreateContact_OAuthSourceUnimplemented.
 	api, _, _ := setupAPI(t)
 	_, err := api.CreateContact(coreapi.ContactCreateInput{

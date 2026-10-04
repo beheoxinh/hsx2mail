@@ -80,7 +80,7 @@
       "namePlaceholder": "例如：個人 Nextcloud",
       "urlLabel": "伺服器 URL",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "輸入基礎 URL 或完整的 calendar-home URL。Email Hub 將探測常見路徑。",
+      "urlHelp": "輸入基礎 URL 或完整的 calendar-home URL。Hsx2Mail 將探測常見路徑。",
       "usernameLabel": "使用者名稱",
       "passwordLabel": "密碼",
       "authMethod": "認證",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "組織者電子郵件",
       "organizerEmailPlaceholder": "you@example.com",
-      "organizerEmailPrompt": "您的伺服器未公佈日曆使用者地址。請輸入 Email Hub 在此來源的活動中應作為會議組織者使用的電子郵件。",
+      "organizerEmailPrompt": "您的伺服器未公佈日曆使用者地址。請輸入 Hsx2Mail 在此來源的活動中應作為會議組織者使用的電子郵件。",
       "organizerEmailHelp": "這是您在此建立的活動中將顯示為 ORGANIZER（組織者）的地址。",
       "organizerEmailInvalid": "請輸入有效的電子郵件地址。"
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "每個帳號的預設設定",
       "noDefaultsHint": "新增一個日曆以設定預設值。",
       "oauthSection": "OAuth 認證資訊（進階）",
-      "oauthHelp": "選擇此擴充功能使用的 Google 或 Microsoft OAuth 用戶端。預設設定（Google 使用 Email Hub testing，Microsoft 使用 Email Hub - Microsoft）適合大多數使用者。",
+      "oauthHelp": "選擇此擴充功能使用的 Google 或 Microsoft OAuth 用戶端。預設設定（Google 使用 Hsx2Mail testing，Microsoft 使用 Hsx2Mail - Microsoft）適合大多數使用者。",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} 分鐘",
@@ -242,7 +242,7 @@
       "renameTitle": "重新命名來源",
       "renameToastSuccess": "已重新命名為「{name}」",
       "timezoneSection": "顯示時區",
-      "timezoneHelp": "選擇 Email Hub 用於呈現活動時間的時區。自動偵測使用您的系統時區。"
+      "timezoneHelp": "選擇 Hsx2Mail 用於呈現活動時間的時區。自動偵測使用您的系統時區。"
     },
     "localCalendar": {
       "title": "新增本機日曆",

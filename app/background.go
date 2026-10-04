@@ -13,6 +13,7 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/notification"
 	"github.com/beheoxinh/hsx2mail/internal/platform"
 	"github.com/beheoxinh/hsx2mail/internal/sync"
+	"github.com/beheoxinh/hsx2mail/internal/tray"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -150,7 +151,7 @@ func (a *App) processIdleEvents(ctx context.Context) {
 				// only, matching IDLE's scope.
 				acctID := event.AccountID
 				// Ignore the echo of our OWN flag writes so reading mail in
-				// Email Hub doesn't trigger a self-inflicted sync; only other
+				// Hsx2Mail doesn't trigger a self-inflicted sync; only other
 				// clients' changes re-sync.
 				if a.recentOwnFlagChange(acctID) {
 					log.Debug().Str("accountID", acctID).Msg("Ignoring IDLE flag echo of our own change")
@@ -249,7 +250,7 @@ func (a *App) handleIdleNewMail(event imap.MailEvent) {
 					})
 				}
 				// Keep the shell badge in step with the sidebar count.
-				a.refreshLauncherBadge()
+				a.refreshUnreadIndicators()
 				// Emit folder counts changed so sidebar unread badge updates
 				if updatedFolder, err := a.folderStore.Get(fID); err == nil && updatedFolder != nil {
 					wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
@@ -317,19 +318,19 @@ const idleFlagResyncDebounce = 1 * time.Second
 // deletion reconcile.
 const idleExpungeDebounce = 1 * time.Second
 
-// ownFlagEchoSuppress is how long after Email Hub writes a flag change we treat an
+// ownFlagEchoSuppress is how long after Hsx2Mail writes a flag change we treat an
 // incoming IDLE flag notification as the echo of our own change (and ignore it),
-// so reading mail in Email Hub doesn't trigger a self-inflicted re-sync.
+// so reading mail in Hsx2Mail doesn't trigger a self-inflicted re-sync.
 const ownFlagEchoSuppress = 5 * time.Second
 
-// noteOwnFlagChange records that Email Hub just STOREd a flag change for an account.
+// noteOwnFlagChange records that Hsx2Mail just STOREd a flag change for an account.
 func (a *App) noteOwnFlagChange(accountID string) {
 	a.ownFlagMu.Lock()
 	a.ownFlagChangeAt[accountID] = time.Now()
 	a.ownFlagMu.Unlock()
 }
 
-// recentOwnFlagChange reports whether Email Hub wrote a flag change for the account
+// recentOwnFlagChange reports whether Hsx2Mail wrote a flag change for the account
 // within the suppression window — used to skip the IDLE flag echo of our own change.
 func (a *App) recentOwnFlagChange(accountID string) bool {
 	a.ownFlagMu.Lock()
@@ -406,7 +407,7 @@ func (a *App) reconcileInboxFlags(accountID string, attempt int) {
 		wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
 			folderID: updated.UnreadCount,
 		})
-		a.refreshLauncherBadge()
+		a.refreshUnreadIndicators()
 	}
 }
 
@@ -553,7 +554,19 @@ func (a *App) sendSystemNotification(info sync.NewMailInfo, subject, fromName, f
 func (a *App) initNotifications(ctx context.Context) {
 	log := logging.WithComponent("app.notify")
 
-	a.notifier = notification.New("Email Hub", a.useDirectDBus)
+	// "Email Notification" is the label the desktop puts on the banner, so the
+	// product name stays out of the notification itself.
+	//
+	// Reaching it needs the direct D-Bus path: org.freedesktop.Notifications.Notify
+	// takes an app_name argument, whereas the portal's AddNotification carries only
+	// an id and a title/body dictionary (verified by capturing the call on the bus).
+	// The portal then labels the banner from the .desktop file, which would say
+	// "Hsx2Mail" again. A sandboxed build has no choice though — talking straight
+	// to org.freedesktop.Notifications needs a permission the manifest does not
+	// grant — so inside Flatpak the portal stays and the label comes from the
+	// desktop entry.
+	useDirect := a.useDirectDBus || !platform.IsFlatpak()
+	a.notifier = notification.New("Email Notification", useDirect)
 
 	// Set click handler. Dispatcher routes based on which NotificationData
 	// fields are populated: ExtensionID set → extension click (raise window
@@ -949,24 +962,26 @@ func (a *App) startLauncherBadge() {
 		return
 	}
 	a.launcherBadge = badge
-	a.refreshLauncherBadge()
+	a.refreshUnreadIndicators()
 }
 
-// refreshLauncherBadge recomputes the total unread count across inbox folders
+// refreshUnreadIndicators recomputes the total unread count across inbox folders
 // and publishes it. Safe to call often; the badge only emits on a real change.
-func (a *App) refreshLauncherBadge() {
-	if a.launcherBadge == nil {
-		return
-	}
+// refreshUnreadIndicators republishes the unified inbox unread count to every
+// surface outside the window: the tray icon (red dot vs green tick) and the
+// shell's dock badge. The two are independent — a desktop without a dock badge
+// implementation must still get the tray icon.
+func (a *App) refreshUnreadIndicators() {
 	count, err := a.messageStore.GetUnifiedInboxUnreadCount()
 	if err != nil {
-		// WithComponent returns a value, and zerolog's chaining methods are on
-		// *Logger, so it needs a local.
-		log := logging.WithComponent("app.badge")
-		log.Debug().Err(err).Msg("Could not read unread count for the shell badge")
+		log := logging.WithComponent("app.unread")
+		log.Debug().Err(err).Msg("Could not read unread count for the tray and dock badge")
 		return
 	}
-	a.launcherBadge.SetCount(count)
+	tray.SetUnread(count > 0)
+	if a.launcherBadge != nil {
+		a.launcherBadge.SetCount(count)
+	}
 }
 
 // stopLauncherBadge releases the D-Bus objects.

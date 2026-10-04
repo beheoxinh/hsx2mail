@@ -13,7 +13,7 @@ Each section below covers a single released-to-released schema transition with a
 
 1. [Why migrations are forward-only](#why-migrations-are-forward-only-read-this-first) — the three structural reasons, stated plainly.
 2. [Backup and recovery runbook](#backup-and-recovery-runbook) — WAL-safe backup, restore, credential caveats, corruption repair. **This is the supported path back.**
-3. [v40 / v41 / v42 — current migrations, no shipped rollback](#v40--v41--v42--current-migrations-no-shipped-rollback).
+3. [v40 / v41 / v42 / v43 — current migrations, no shipped rollback](#v40--v41--v42--v43--current-migrations-no-shipped-rollback).
 4. [What you need](#what-you-need), [What you'll lose](#what-youll-lose), [Procedure](#procedure).
 5. Per-transition rollback sections (`v39 → v30`, and any older ones) further down.
 
@@ -211,9 +211,9 @@ rebuild the search index rather than the whole database. See `DATABASE.md` §7.
 
 ---
 
-## v40 / v41 / v42 — current migrations, no shipped rollback
+## v40 / v41 / v42 / v43 — current migrations, no shipped rollback
 
-Migrations **v40**, **v41** and **v42** are the current schema (v42 as of this writing).
+Migrations **v40**, **v41**, **v42** and **v43** are the current schema (v43 as of this writing).
 They have **no release-to-release rollback section** below because no shipped release has
 rolled *back* out of them yet. When the first one does, add a section here. What each one
 does, and what a rollback would cost, so you can decide before a real incident:
@@ -224,19 +224,22 @@ does, and what a rollback would cost, so you can decide before a real incident:
 | 41 | `accounts.secondary_sync_interval` — per-account reconciliation cadence for secondary folders (e.g. Archive), `0` meaning "derive from `sync_interval`, clamped to a 10-minute floor". `NOT NULL DEFAULT 0`. | Drop the column; every row falls back to deriving from `sync_interval`. No data loss. |
 | 42 | **Index-only.** Eight new indexes on `messages` (`idx_messages_needs_body`, `idx_messages_account_date`, `idx_messages_folder_thread_date`, `idx_messages_folder_conv`, `idx_messages_thread_norm`, `idx_messages_message_id_norm`, `idx_messages_in_reply_to_norm`, `idx_messages_account_message_id`). No column or table added. | This is the one clean case: `DROP INDEX` for all eight, in any order, no data touched. See `DATABASE.md` §11. |
 
+| 43 | Replaces the `messages_fts_update` trigger with one guarded by a `WHEN` clause, so a flag write no longer re-indexes the message text. | Search keeps working, but every flag change starts paying full FTS re-indexing again — a large mailbox flag reconcile goes back to re-tokenizing thousands of messages. |
+| 43 | Replaces the `messages_fts_update` trigger with one guarded by a `WHEN` clause, so a flag write no longer re-indexes the message text. | Search keeps working, but every flag change starts paying full FTS re-indexing again — a large mailbox flag reconcile goes back to re-tokenizing thousands of messages. |
+
 Because v42 is index-only, it is the *only* one of the three with a trivially correct
 rollback. v40 and v41 are single nullable/defaulted columns, so `ALTER TABLE … DROP
 COLUMN` works for them provided no index references them (none does today) — but do it
 with the app **closed** and verify with `PRAGMA integrity_check` afterwards.
 
-### Rollback recipe for v40 / v41 / v42 (closed app)
+### Rollback recipe for v40 / v41 / v42 / v43 (closed app)
 
 ```bash
 # 1. Quit the app.
 pkill -f hsx2mail
 
 # 2. Back up first. Always.
-cp ~/.local/share/hsx2mail/hsx2mail.db /tmp/before-v42-rollback.db
+cp ~/.local/share/hsx2mail/hsx2mail.db /tmp/before-v43-rollback.db
 
 # 3. v42 (indexes only) — safe, idempotent.
 sqlite3 ~/.local/share/hsx2mail/hsx2mail.db <<'SQL'
@@ -248,6 +251,10 @@ DROP INDEX IF EXISTS idx_messages_thread_norm;
 DROP INDEX IF EXISTS idx_messages_message_id_norm;
 DROP INDEX IF EXISTS idx_messages_in_reply_to_norm;
 DROP INDEX IF EXISTS idx_messages_account_message_id;
+
+# 4. v43 (FTS trigger only) — drop the guarded trigger; the v14
+#    unguarded one is recreated by rolling back past v43.
+DROP TRIGGER IF EXISTS messages_fts_update;
 SQL
 
 # 4. v41 / v40 (columns) — only if you actually need the old shape.

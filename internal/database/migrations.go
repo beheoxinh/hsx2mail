@@ -809,7 +809,7 @@ var migrations = []Migration{
 			-- sure it exists so the backfill SELECTs below don't error.
 			--
 			-- Shape matches the LEGACY (pre-v0.3.0) ensureTable schema — no
-			-- kind, no name_overridden. Older Email Hub installs (≤ v0.2.4) have
+			-- kind, no name_overridden. Older Hsx2Mail installs (≤ v0.2.4) have
 			-- the table in this shape, so referencing those columns in the
 			-- backfill SELECTs would fail on real production DBs. Defaults
 			-- for the post-migration columns are supplied as literals in the
@@ -916,7 +916,7 @@ var migrations = []Migration{
 			-- record-grain for local contacts today; multi-field expansion for local
 			-- happens via the new sub-tables which start empty).
 			-- record id: derived from email so subsequent linking via record_id is
-			-- stable. Older Email Hub never exposed contact ids externally; this just
+			-- stable. Older Hsx2Mail never exposed contact ids externally; this just
 			-- needs to be unique + deterministic within the migration.
 			-- kind / name_overridden are hardcoded literals here rather than
 			-- selected from the contacts table because legacy v0.2.x DBs
@@ -1379,6 +1379,32 @@ var migrations = []Migration{
 			-- batch, keyed on (account_id, message_id).
 			CREATE INDEX IF NOT EXISTS idx_messages_account_message_id
 				ON messages(account_id, message_id);
+		`,
+	},
+	{
+		Version: 43,
+		SQL: `
+			-- Avoid rewriting FTS for every UPDATE when the indexed text/subject are
+			-- unchanged. The FTS index stores the searchable columns (subject,
+			-- from_name, from_email, to_list, cc_list, snippet, body_text); a flag
+			-- flip (is_read/is_starred/...) must not trigger a full re-tokenization.
+			DROP TRIGGER IF EXISTS messages_fts_update;
+
+			CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages
+			FOR EACH ROW
+			WHEN OLD.subject IS NOT NEW.subject
+				OR OLD.from_name IS NOT NEW.from_name
+				OR OLD.from_email IS NOT NEW.from_email
+				OR OLD.to_list IS NOT NEW.to_list
+				OR OLD.cc_list IS NOT NEW.cc_list
+				OR OLD.snippet IS NOT NEW.snippet
+				OR OLD.body_text IS NOT NEW.body_text
+			BEGIN
+				INSERT INTO messages_fts(messages_fts, rowid, subject, from_name, from_email, to_list, cc_list, snippet, body_text)
+				VALUES ('delete', OLD.rowid, OLD.subject, OLD.from_name, OLD.from_email, OLD.to_list, OLD.cc_list, OLD.snippet, OLD.body_text);
+				INSERT INTO messages_fts(rowid, subject, from_name, from_email, to_list, cc_list, snippet, body_text)
+				VALUES (NEW.rowid, NEW.subject, NEW.from_name, NEW.from_email, NEW.to_list, NEW.cc_list, NEW.snippet, NEW.body_text);
+			END;
 		`,
 	},
 }

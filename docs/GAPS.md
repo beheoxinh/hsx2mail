@@ -235,9 +235,11 @@ behavior; which `coreapi` methods remain stubs.
 
 ## Cross-cutting
 
-- **G19 — Naming decision.** The repository, module, and Flatpak id use
-  `Hsx2Mail`; the running product name and most docs use "Email Hub".
-  Record the chosen name and the affected rename surface. **Priority:** P2.
+- **G19 — Naming decision. RESOLVED.** `Hsx2Mail` is the product name, applied
+  to the window title, tray title/tooltip, notification app name, About metadata,
+  and every user-visible string across the 10 locales and both extensions. The
+  module path, app id and Flatpak id already used it. Historical `docs/analysis/`
+  reports still say "Email Hub" because they record the pre-rename state.
 - **G20 — Documentation drift test.** A small check, run from `make lint`,
   that compares the generated schema reference (G1) and the version list
   (G2) against source, so the P0 gaps cannot silently recur. **Priority:** P2.

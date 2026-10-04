@@ -123,7 +123,7 @@ func TestDefaultIdleConfig(t *testing.T) {
 	if cfg.MaxReconnectBackoff != 5*time.Minute {
 		t.Errorf("DefaultIdleConfig().MaxReconnectBackoff = %v, want %v", cfg.MaxReconnectBackoff, 5*time.Minute)
 	}
-	if cfg.MaxReconnectAttempts != 10 {
-		t.Errorf("DefaultIdleConfig().MaxReconnectAttempts = %d, want 10", cfg.MaxReconnectAttempts)
+	if cfg.MaxReconnectAttempts != 6 {
+		t.Errorf("DefaultIdleConfig().MaxReconnectAttempts = %d, want 6", cfg.MaxReconnectAttempts)
 	}
 }

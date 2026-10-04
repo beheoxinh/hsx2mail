@@ -324,7 +324,7 @@ type App struct {
 	wakeSyncing     bool                          // guards syncAfterWake against concurrent calls
 	syncMu          goSync.Mutex                  // protects sync maps
 
-	// Suppresses the IDLE echo of our own flag writes: when Email Hub STOREs a flag
+	// Suppresses the IDLE echo of our own flag writes: when Hsx2Mail STOREs a flag
 	// change it stamps the account here, so the incoming IDLE FETCH echo of that
 	// same change doesn't trigger a re-sync (only other clients' changes do).
 	ownFlagMu       goSync.Mutex
@@ -420,9 +420,9 @@ func StartupDialogInfoFor(err error) StartupDialogInfo {
 	var schemaTooNew *database.ErrSchemaTooNew
 	if errors.As(err, &schemaTooNew) {
 		text := fmt.Sprintf(
-			"Email Hub cannot open your database because its schema (version %d) is newer "+
-				"than this build of Email Hub supports (max version %d).\n\n"+
-				"This usually means you downgraded Email Hub. To recover, either reinstall "+
+			"Hsx2Mail cannot open your database because its schema (version %d) is newer "+
+				"than this build of Hsx2Mail supports (max version %d).\n\n"+
+				"This usually means you downgraded Hsx2Mail. To recover, either reinstall "+
 				"the newer version, or follow the rollback instructions to bring your "+
 				"database back to version %d:\n\n"+
 				"%s",
@@ -430,15 +430,15 @@ func StartupDialogInfoFor(err error) StartupDialogInfo {
 			docsRollbackURL,
 		)
 		return StartupDialogInfo{
-			Title:       "Email Hub could not start",
+			Title:       "Hsx2Mail could not start",
 			Text:        text,
 			ActionLabel: "Open Docs",
 			ActionURL:   docsRollbackURL,
 		}
 	}
 	return StartupDialogInfo{
-		Title: "Email Hub could not start",
-		Text:  fmt.Sprintf("Email Hub could not start.\n\nDetails: %v", err),
+		Title: "Hsx2Mail could not start",
+		Text:  fmt.Sprintf("Hsx2Mail could not start.\n\nDetails: %v", err),
 	}
 }
 
@@ -512,7 +512,7 @@ func (a *App) Preflight() error {
 
 	// Wire user-picked slot aliases into the oauth2 resolver chain. When the
 	// user has chosen a non-default shipped option for a given config id
-	// (e.g., contacts settings → "Email Hub mail client" reroutes google-contacts
+	// (e.g., contacts settings → "Hsx2Mail mail client" reroutes google-contacts
 	// onto google-mail), the resolver consults this hook after the user-
 	// override step and before the provider chain.
 	oauth2.SlotAliasLookup = func(configID string) (string, bool) {
@@ -886,7 +886,7 @@ func (a *App) Startup(ctx context.Context) {
 	// (inert on stock GNOME, which has no badge API).
 	a.startLauncherBadge()
 
-	log.Info().Msg("Email Hub started successfully")
+	log.Info().Msg("Hsx2Mail started successfully")
 }
 
 // IsReady reports whether Startup has fully completed. The frontend calls
@@ -1125,7 +1125,7 @@ func (a *App) Shutdown(ctx context.Context) {
 		log.Info().Msg("Database closed")
 	}
 
-	log.Info().Msg("Email Hub shutdown complete")
+	log.Info().Msg("Hsx2Mail shutdown complete")
 }
 
 // updateDBConnectionPool scales the database connection pool based on account count.

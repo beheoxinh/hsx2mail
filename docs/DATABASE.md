@@ -180,8 +180,9 @@ in the same transaction (§6).
 | 40 | 1305 | Stable OAuth account identity ("<tid>:<oid>" for Microsoft) captured | `ALTER TABLE accounts` |
 | 41 | 1319 | Per-account background polling interval for secondary folders | `ALTER TABLE accounts` |
 | 42 | 1331 | Index-only migrations for the Phase 2 sync/data-layer work. No | index `idx_messages_needs_body`, `idx_messages_account_date`, `idx_messages_folder_thread_date`, `idx_messages_folder_conv` (+4 more) |
+| 43 | 1385 | Avoid rewriting FTS for every UPDATE when the indexed text/subject are | `INSERT INTO messages_fts` |
 <!--/GEN:MIGRATIONS-->
-| **42** | 1331 | Current schema version | — |
+| **43** | 1385 | Current schema version | — |
 
 **No migration exists above v42.** `ErrSchemaTooNew` (§7) fires if the database reports a
 higher version.

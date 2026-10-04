@@ -785,7 +785,7 @@
       </section>
 
       <!-- OAuth Credentials (advanced) — picker matches Contacts'. Google
-           shows "Email Hub testing" as the default since the mail-app's verified
+           shows "Hsx2Mail testing" as the default since the mail-app's verified
            client carries no Calendar scopes. Microsoft resolves to mail's
            client (consolidated in core_provider.go); Custom is always an
            escape hatch. -->

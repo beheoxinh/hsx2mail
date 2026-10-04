@@ -240,7 +240,7 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 		}
 		// The shell badge follows the same counts; recompute after the write so
 		// it drops to zero as soon as the user reads the last unread message.
-		a.refreshLauncherBadge()
+		a.refreshUnreadIndicators()
 	}()
 
 	// Sync to IMAP in background with retry

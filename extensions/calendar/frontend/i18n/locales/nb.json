@@ -80,7 +80,7 @@
       "namePlaceholder": "f.eks. Personlig Nextcloud",
       "urlLabel": "Tjener-URL",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "Skriv inn grunn-URL-en eller den fullstendige URL-en til kalenderhjemmet. Email Hub vil undersøke vanlige stier.",
+      "urlHelp": "Skriv inn grunn-URL-en eller den fullstendige URL-en til kalenderhjemmet. Hsx2Mail vil undersøke vanlige stier.",
       "usernameLabel": "Brukernavn",
       "passwordLabel": "Passord",
       "authMethod": "Autentisering",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "Arrangørens e-post",
       "organizerEmailPlaceholder": "deg@example.com",
-      "organizerEmailPrompt": "Tjeneren din publiserte ikke en kalenderbrukeradresse. Skriv inn e-posten Email Hub skal bruke som møtearrangør for hendelser på denne kilden.",
+      "organizerEmailPrompt": "Tjeneren din publiserte ikke en kalenderbrukeradresse. Skriv inn e-posten Hsx2Mail skal bruke som møtearrangør for hendelser på denne kilden.",
       "organizerEmailHelp": "Dette er adressen som vises som ORGANIZER på hendelser du oppretter her.",
       "organizerEmailInvalid": "Skriv inn en gyldig e-postadresse."
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "Standarder per konto",
       "noDefaultsHint": "Legg til en kalender for å angi standarder.",
       "oauthSection": "OAuth-legitimasjon (avansert)",
-      "oauthHelp": "Velg Google- eller Microsoft-OAuth-klienten denne utvidelsen bruker. Standarden (Email Hub testing for Google, Email Hub - Microsoft for Microsoft) passer for de fleste brukere.",
+      "oauthHelp": "Velg Google- eller Microsoft-OAuth-klienten denne utvidelsen bruker. Standarden (Hsx2Mail testing for Google, Hsx2Mail - Microsoft for Microsoft) passer for de fleste brukere.",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} minutter",
@@ -242,7 +242,7 @@
       "renameTitle": "Gi kilden nytt navn",
       "renameToastSuccess": "Fikk nytt navn til «{name}»",
       "timezoneSection": "Visningstidssone",
-      "timezoneHelp": "Velg hvilken tidssone Email Hub bruker til å vise hendelsestider. Automatisk oppdaging bruker systemets tidssone."
+      "timezoneHelp": "Velg hvilken tidssone Hsx2Mail bruker til å vise hendelsestider. Automatisk oppdaging bruker systemets tidssone."
     },
     "localCalendar": {
       "title": "Legg til lokal kalender",

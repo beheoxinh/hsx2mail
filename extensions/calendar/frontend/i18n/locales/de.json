@@ -80,7 +80,7 @@
       "namePlaceholder": "z. B. Private Nextcloud",
       "urlLabel": "Server-URL",
       "urlPlaceholder": "https://cloud.example.com/remote.php/dav",
-      "urlHelp": "Gib die Basis-URL oder die vollständige Kalender-Haupt-URL ein. Email Hub wird gängige Pfade automatisch prüfen.",
+      "urlHelp": "Gib die Basis-URL oder die vollständige Kalender-Haupt-URL ein. Hsx2Mail wird gängige Pfade automatisch prüfen.",
       "usernameLabel": "Benutzername",
       "passwordLabel": "Passwort",
       "authMethod": "Authentifizierung",
@@ -110,7 +110,7 @@
       "providerLabelMicrosoft": "Outlook",
       "organizerEmailLabel": "E-Mail des Organisators",
       "organizerEmailPlaceholder": "deine-adresse@example.com",
-      "organizerEmailPrompt": "Dein Server hat keine Kalender-Benutzeradresse bereitgestellt. Gib die E-Mail-Adresse ein, die Email Hub als Organisator für Besprechungen in dieser Quelle verwenden soll.",
+      "organizerEmailPrompt": "Dein Server hat keine Kalender-Benutzeradresse bereitgestellt. Gib die E-Mail-Adresse ein, die Hsx2Mail als Organisator für Besprechungen in dieser Quelle verwenden soll.",
       "organizerEmailHelp": "Dies ist die Adresse, die bei von dir erstellten Terminen als ORGANISATOR angezeigt wird.",
       "organizerEmailInvalid": "Gib eine gültige E-Mail-Adresse ein."
     },
@@ -182,7 +182,7 @@
       "providerDefaultsLabel": "Standardwerte pro Konto",
       "noDefaultsHint": "Füge einen Kalender hinzu, um Standardwerte festzulegen.",
       "oauthSection": "OAuth-Anmeldedaten (erweitert)",
-      "oauthHelp": "Wähle den Google- oder Microsoft-OAuth-Client, den diese Erweiterung verwendet. Der Standardwert (Email Hub Testing für Google, Email Hub - Microsoft für Microsoft) ist für die meisten Benutzer optimal.",
+      "oauthHelp": "Wähle den Google- oder Microsoft-OAuth-Client, den diese Erweiterung verwendet. Der Standardwert (Hsx2Mail Testing für Google, Hsx2Mail - Microsoft für Microsoft) ist für die meisten Benutzer optimal.",
       "oauthGoogleLabel": "Google",
       "oauthMicrosoftLabel": "Microsoft",
       "intervalMinutes": "{n} Minuten",
@@ -242,7 +242,7 @@
       "renameTitle": "Quelle umbenennen",
       "renameToastSuccess": "Umbenannt in „{name}“",
       "timezoneSection": "Anzeige-Zeitzone",
-      "timezoneHelp": "Wähle die Zeitzone, die Email Hub zur Darstellung der Termine verwenden soll. 'Automatisch' nutzt deine Systemzeitzone."
+      "timezoneHelp": "Wähle die Zeitzone, die Hsx2Mail zur Darstellung der Termine verwenden soll. 'Automatisch' nutzt deine Systemzeitzone."
     },
     "localCalendar": {
       "title": "Lokalen Kalender hinzufügen",

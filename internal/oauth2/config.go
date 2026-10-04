@@ -39,10 +39,10 @@ var (
 	// verified for (e.g., contacts.readwrite, full Calendar). Single un-
 	// Google-verified test client backs both google-contacts and
 	// google-calendar slots. Surfaced in the picker as
-	// "Email Hub - Google (Testing)" so users understand the verification
+	// "Hsx2Mail - Google (Testing)" so users understand the verification
 	// status before consenting. When the mail project eventually gets
 	// verified with these scopes, the default in the picker UI switches
-	// to "Email Hub - Google" (which reuses GoogleClientID via a manifest-
+	// to "Hsx2Mail - Google" (which reuses GoogleClientID via a manifest-
 	// declared scope route) and this slot becomes a fallback.
 	GoogleTestingClientID string
 
@@ -51,13 +51,15 @@ var (
 )
 
 func init() {
-	if GoogleClientID != "" {
-		return
+	if GoogleClientID == "" {
+		loadFromShim()
 	}
-	loadFromShim()
 	if GoogleClientID == "" {
 		loadFromEnvFile()
 	}
+	// Last resort: the shipped public client ids. Only applies when neither
+	// ldflags nor .env supplied one, so a configured value always wins.
+	applyShippedFallbacks()
 }
 
 // loadFromEnvFile reads OAuth credentials from the project root .env when

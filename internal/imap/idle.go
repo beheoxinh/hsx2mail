@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
 	"github.com/beheoxinh/hsx2mail/internal/logging"
+	"github.com/beheoxinh/hsx2mail/internal/oauth2"
 	"github.com/rs/zerolog"
 )
 
@@ -52,7 +54,7 @@ func DefaultIdleConfig() IdleConfig {
 		IdleTimeout:          10 * time.Minute, // Shorter cycle for better connection health
 		ReconnectBackoff:     1 * time.Second,
 		MaxReconnectBackoff:  5 * time.Minute,
-		MaxReconnectAttempts: 10,
+		MaxReconnectAttempts: 6,
 		EventSendTimeout:     2 * time.Second,  // Don't block forever on event send
 		HealthCheckEnabled:   true,             // Verify connection before IDLE
 		ShutdownTimeout:      closeTimeout,    // Graceful shutdown timeout
@@ -209,6 +211,13 @@ func (ic *IdleConnection) run(ctx context.Context) {
 
 		// Connect if needed
 		if err := ic.ensureConnected(ctx); err != nil {
+			// A revoked/expired grant (or a client-credential mismatch) is
+			// terminal: reconnecting cannot fix it, and burning the full
+			// reconnect budget just delays the re-auth prompt the user needs.
+			if errors.Is(err, oauth2.ErrReauthRequired) {
+				ic.log.Error().Err(err).Msg("IDLE stopped: re-authorization required")
+				return
+			}
 			attempts++
 			if attempts >= ic.config.MaxReconnectAttempts {
 				ic.log.Error().

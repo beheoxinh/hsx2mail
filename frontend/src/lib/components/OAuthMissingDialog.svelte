@@ -1,6 +1,6 @@
 <script lang="ts">
   // Launch-time warning shown when one or more OAuth provider credentials
-  // weren't compiled into this build of Email Hub. Sign-in for the listed
+  // weren't compiled into this build of Hsx2Mail. Sign-in for the listed
   // providers will silently fail otherwise. Acknowledged via the OK button;
   // an optional "Don't show again" toggle persists the opt-out via the
   // SetOAuthWarningDisabled setting in App.svelte.

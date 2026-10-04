@@ -257,7 +257,7 @@ func (a *App) CompleteOAuthAccountSetup(provider, email, accountName, displayNam
 
 // StartCustomOAuthFlow initiates an OAuth2 authorization flow for a user-supplied
 // ("bring your own app") provider — used when adding a generic IMAP account with OAuth.
-// Email Hub ships no credentials for custom providers, so the caller passes the
+// Hsx2Mail ships no credentials for custom providers, so the caller passes the
 // authorization + token endpoints, scopes, and client credentials. Emits the same
 // oauth:started / oauth:success / oauth:error events as StartOAuthFlow, so the frontend
 // reuses its existing OAuth UI. On success, CompleteCustomOAuthAccountSetup persists the
@@ -598,9 +598,14 @@ type OAuthBuildStatus struct {
 // app start; the result is build-constant for the running process.
 func (a *App) GetOAuthBuildStatus() OAuthBuildStatus {
 	return OAuthBuildStatus{
-		Google:        oauth2.GoogleClientID != "" && oauth2.GoogleClientSecret != "",
+		// A provider is usable as soon as it has a client id. The client secret
+		// is optional: every flow runs PKCE S256, and flow.go only sends
+		// client_secret when non-empty. Requiring a secret here would report the
+		// shipped PKCE-only clients as unconfigured and pop the "OAuth missing"
+		// dialog on an app that can in fact authorize.
+		Google:        oauth2.GoogleClientID != "",
 		Microsoft:     oauth2.MicrosoftClientID != "",
-		GoogleTesting: oauth2.GoogleTestingClientID != "" && oauth2.GoogleTestingClientSecret != "",
+		GoogleTesting: oauth2.GoogleTestingClientID != "",
 	}
 }
 

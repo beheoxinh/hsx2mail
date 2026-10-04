@@ -119,13 +119,13 @@
     "delete": {
       "title": "Supprimer ce contact ?",
       "descriptionLocal": "{name} sera supprimé de vos contacts locaux. Les e-mails que vous avez déjà envoyés à cette adresse ne seront pas affectés.",
-      "descriptionCardDAV": "{name} sera supprimé de ce carnet d'adresses sur le serveur. Cette action ne peut pas être annulée depuis Email Hub."
+      "descriptionCardDAV": "{name} sera supprimé de ce carnet d'adresses sur le serveur. Cette action ne peut pas être annulée depuis Hsx2Mail."
     },
     "settings": {
       "title": "Paramètres des contacts",
       "description": "Configurez les identifiants OAuth pour l'extension Contacts. L'accès en lecture repose sur les permissions existantes de votre compte mail ; ces identifiants permettent les opérations d'ÉCRITURE (modifier / créer / supprimer) sur les sources Google ou Microsoft.",
       "oauthHeading": "Identifiants OAuth",
-      "oauthDescription": "Chaque emplacement utilise les identifiants vérifiés d'Email Hub quand disponibles ; passez à Personnalisé pour fournir votre propre Client ID et Secret.",
+      "oauthDescription": "Chaque emplacement utilise les identifiants vérifiés d'Hsx2Mail quand disponibles ; passez à Personnalisé pour fournir votre propre Client ID et Secret.",
       "googleLabel": "Contacts Google",
       "microsoftLabel": "Contacts Microsoft",
       "writeAccessHeading": "Accès en écriture",

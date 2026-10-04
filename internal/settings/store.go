@@ -15,25 +15,26 @@ import (
 
 // Known setting keys
 const (
-	KeyReadReceiptResponsePolicy  = "read_receipt_response_policy"
-	KeyMarkAsReadDelay            = "mark_as_read_delay"
-	KeyMessageListDensity         = "message_list_density"
-	KeyMessageListSortOrder       = "message_list_sort_order"
-	KeyThemeMode                  = "theme_mode"
-	KeyShowTitleBar               = "show_title_bar"
-	KeyTermsAccepted              = "terms_accepted"
-	KeyRunBackground              = "run_background"
-	KeyStartHidden                = "start_hidden"
-	KeyAutostart                  = "autostart"
-	KeyLanguage                   = "language"
-	KeyComposerMode               = "composer_mode"
-	KeyMailtoMode                 = "mailto_mode"
-	KeyComposerFormat             = "composer_format"
-	KeyNativeTitleBar             = "native_titlebar"
-	KeyAlwaysLoadImages           = "always_load_images"
-	KeyDarkMailContent            = "dark_mail_content"
-	KeyDarkComposerBody           = "dark_composer_body"
-	KeyAccentBarUnread            = "accent_bar_unread"
+	KeyReadReceiptResponsePolicy = "read_receipt_response_policy"
+	KeyMarkAsReadDelay           = "mark_as_read_delay"
+	KeyMessageListDensity        = "message_list_density"
+	KeyMessageListSortOrder      = "message_list_sort_order"
+	KeyThemeMode                 = "theme_mode"
+	KeyShowTitleBar              = "show_title_bar"
+	KeyTermsAccepted             = "terms_accepted"
+	KeyRunBackground             = "run_background"
+	KeyStartHidden               = "start_hidden"
+	KeyAutostart                 = "autostart"
+	KeyLanguage                  = "language"
+	KeyComposerMode              = "composer_mode"
+	KeyMailtoMode                = "mailto_mode"
+	KeyComposerFormat            = "composer_format"
+	KeyNativeTitleBar            = "native_titlebar"
+	KeyAlwaysLoadImages          = "always_load_images"
+	KeyDarkMailContent           = "dark_mail_content"
+	KeyDarkComposerBody          = "dark_composer_body"
+	KeyAccentBarUnread           = "accent_bar_unread"
+
 	KeyShowMessageListCircles     = "show_message_list_circles"
 	KeyShowMessageListProfilePics = "show_message_list_profile_pics" // render contact photos in the message-list avatar slot (default off)
 	KeyShowViewerCircles          = "show_viewer_circles"
@@ -76,10 +77,19 @@ const DefaultMessageListDensity = DensityStandard
 const (
 	SortOrderNewest = "newest"
 	SortOrderOldest = "oldest"
+	// SortOrderUnreadFirst floats conversations that still contain unread mail
+	// to the top, then falls back to newest-first inside each group. Mail you have
+	// not dealt with yet is the thing you opened the list to see, so this is the
+	// default rather than plain recency.
+	SortOrderUnreadFirst = "unread-first"
 )
 
 // DefaultMessageListSortOrder is the default sort order
-const DefaultMessageListSortOrder = SortOrderNewest
+const DefaultMessageListSortOrder = SortOrderUnreadFirst
+
+// DefaultAccentBarUnread controls whether unread rows get an accent bar when the
+// setting has never been written. On by default; see GetAccentBarUnread.
+const DefaultAccentBarUnread = true
 
 // Theme mode values
 const (
@@ -285,8 +295,11 @@ func (s *Store) SetMessageListDensity(density string) error {
 // GetAccentBarUnread returns whether the accent bar for unread messages is enabled
 func (s *Store) GetAccentBarUnread() (bool, error) {
 	value, err := s.Get(KeyAccentBarUnread)
-	if err != nil {
-		return false, err
+	if err != nil || value == "" {
+		// Default on: the accent bar is the only persistent per-row cue that a
+		// conversation still has unread mail, so it is on unless the user says
+		// otherwise.
+		return DefaultAccentBarUnread, err
 	}
 	return value == "true", nil
 }
@@ -370,16 +383,23 @@ func (s *Store) GetMessageListSortOrder() (string, error) {
 	if err != nil {
 		return DefaultMessageListSortOrder, err
 	}
-	if value == "" {
-		return DefaultMessageListSortOrder, nil
+	switch value {
+	case SortOrderNewest, SortOrderOldest, SortOrderUnreadFirst:
+		return value, nil
 	}
-	return value, nil
+	// Anything else means a hand-edited or downgraded row, not a valid choice;
+	// fall back to the default instead of handing an unknown string to the
+	// conversation query.
+	return DefaultMessageListSortOrder, nil
 }
 
 // SetMessageListSortOrder sets the message list sort order
 func (s *Store) SetMessageListSortOrder(sortOrder string) error {
-	if sortOrder != SortOrderNewest && sortOrder != SortOrderOldest {
-		return fmt.Errorf("invalid sort order: %s (must be 'newest' or 'oldest')", sortOrder)
+	switch sortOrder {
+	case SortOrderNewest, SortOrderOldest, SortOrderUnreadFirst:
+	default:
+		return fmt.Errorf("invalid sort order: %s (must be %q, %q or %q)",
+			sortOrder, SortOrderNewest, SortOrderOldest, SortOrderUnreadFirst)
 	}
 	return s.Set(KeyMessageListSortOrder, sortOrder)
 }
@@ -451,14 +471,14 @@ func (s *Store) SetTermsAccepted(accepted bool) error {
 	return s.Set(KeyTermsAccepted, value)
 }
 
-// GetLastSeenVersion returns the Email Hub version that was running the last time
+// GetLastSeenVersion returns the Hsx2Mail version that was running the last time
 // the "What's new in this version" dialog was acknowledged with OK. Empty
 // string means it's never been acknowledged (e.g. fresh install).
 func (s *Store) GetLastSeenVersion() (string, error) {
 	return s.Get(KeyLastSeenVersion)
 }
 
-// SetLastSeenVersion records the current Email Hub version as acknowledged so the
+// SetLastSeenVersion records the current Hsx2Mail version as acknowledged so the
 // What's New dialog doesn't fire again until the next version upgrade.
 func (s *Store) SetLastSeenVersion(version string) error {
 	return s.Set(KeyLastSeenVersion, version)
@@ -485,7 +505,7 @@ func (s *Store) SetOAuthWarningDisabled(disabled bool) error {
 	return s.Set(KeyOAuthWarningDisabled, value)
 }
 
-// GetRunBackground returns whether Email Hub should keep running when the window is closed
+// GetRunBackground returns whether Hsx2Mail should keep running when the window is closed
 func (s *Store) GetRunBackground() (bool, error) {
 	value, err := s.Get(KeyRunBackground)
 	if err != nil {
@@ -494,7 +514,7 @@ func (s *Store) GetRunBackground() (bool, error) {
 	return value == "true", nil
 }
 
-// SetRunBackground sets whether Email Hub should keep running when the window is closed
+// SetRunBackground sets whether Hsx2Mail should keep running when the window is closed
 func (s *Store) SetRunBackground(enabled bool) error {
 	value := "false"
 	if enabled {
@@ -503,7 +523,7 @@ func (s *Store) SetRunBackground(enabled bool) error {
 	return s.Set(KeyRunBackground, value)
 }
 
-// GetStartHidden returns whether Email Hub should start with the window hidden
+// GetStartHidden returns whether Hsx2Mail should start with the window hidden
 func (s *Store) GetStartHidden() (bool, error) {
 	value, err := s.Get(KeyStartHidden)
 	if err != nil {
@@ -512,7 +532,7 @@ func (s *Store) GetStartHidden() (bool, error) {
 	return value == "true", nil
 }
 
-// SetStartHidden sets whether Email Hub should start with the window hidden
+// SetStartHidden sets whether Hsx2Mail should start with the window hidden
 func (s *Store) SetStartHidden(enabled bool) error {
 	value := "false"
 	if enabled {
@@ -521,7 +541,7 @@ func (s *Store) SetStartHidden(enabled bool) error {
 	return s.Set(KeyStartHidden, value)
 }
 
-// GetAutostart returns whether Email Hub should start on login
+// GetAutostart returns whether Hsx2Mail should start on login
 func (s *Store) GetAutostart() (bool, error) {
 	value, err := s.Get(KeyAutostart)
 	if err != nil {
@@ -530,7 +550,7 @@ func (s *Store) GetAutostart() (bool, error) {
 	return value == "true", nil
 }
 
-// SetAutostart sets whether Email Hub should start on login
+// SetAutostart sets whether Hsx2Mail should start on login
 func (s *Store) SetAutostart(enabled bool) error {
 	value := "false"
 	if enabled {
@@ -748,7 +768,7 @@ func (s *Store) SetAlwaysLoadImages(enabled bool) error {
 }
 
 // GetDarkMailContent returns whether email content should be visually darkened
-// while Email Hub is in dark mode. Off by default.
+// while Hsx2Mail is in dark mode. Off by default.
 func (s *Store) GetDarkMailContent() (bool, error) {
 	value, err := s.Get(KeyDarkMailContent)
 	if err != nil {
@@ -767,7 +787,7 @@ func (s *Store) SetDarkMailContent(enabled bool) error {
 }
 
 // GetDarkComposerBody returns whether the composer message body should use a
-// dark background while Email Hub is in dark mode. Off by default (white body).
+// dark background while Hsx2Mail is in dark mode. Off by default (white body).
 func (s *Store) GetDarkComposerBody() (bool, error) {
 	value, err := s.Get(KeyDarkComposerBody)
 	if err != nil {

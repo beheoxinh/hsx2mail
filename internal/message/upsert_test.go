@@ -124,7 +124,7 @@ func TestUpsert_ExplicitBodyFetchStillWins(t *testing.T) {
 	first := &Message{
 		AccountID:   accountID,
 		FolderID:    folderID,
-		UID:       9,
+		UID:         9,
 		Date:        now,
 		BodyText:    "stale",
 		BodyFetched: true,

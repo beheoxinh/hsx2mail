@@ -15,8 +15,8 @@ const (
 	autostartFilename = "io.github.beheoxinh.Hsx2Mail.desktop"
 	desktopEntryTmpl  = `[Desktop Entry]
 Type=Application
-Name=Email Hub
-Comment=Email Hub Email Client
+Name=Hsx2Mail
+Comment=Hsx2Mail Email Client
 Exec=%s
 Icon=io.github.beheoxinh.Hsx2Mail
 Terminal=false
