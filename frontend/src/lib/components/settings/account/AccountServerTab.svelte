@@ -171,7 +171,8 @@
   let loadingSyncFolders = $state(false)
   let syncFolders = $state<folder.Folder[]>([])
 
-  const coreFolderTypes = ['inbox', 'drafts', 'sent']
+  // Must match sidebarCoreTypes in app/folder.go: the 5 default folders.
+  const coreFolderTypes = ['inbox', 'drafts', 'sent', 'trash', 'spam']
 
   async function loadSyncFolders() {
     if (syncFolders.length > 0) return

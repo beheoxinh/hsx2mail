@@ -501,7 +501,7 @@
     "oauthConnected": "Connected via OAuth",
     "folderSync": "Folder sync subscriptions",
     "manageFolderSync": "Manage folder sync",
-    "manageFolderSyncHelp": "When enabled, choose which folders sync automatically. When disabled, only Inbox, Drafts, and Sent are synced.",
+    "manageFolderSyncHelp": "Sidebar shows only Inbox, Sent, Drafts, Trash and Spam. When enabled, tick extra folders to also show and sync them. When disabled, only the 5 default folders are synced.",
     "syncAllFolders": "Sync all folders",
     "alwaysSynced": "always synced",
     "folderMapping": "Folder mapping",

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/beheoxinh/hsx2mail/internal/folder"
@@ -202,15 +203,52 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 		byFolder[m.FolderID] = append(byFolder[m.FolderID], m)
 	}
 
-	// Update local DB first (local-first)
+	// Sync to IMAP FIRST (synchronously): if the STORE fails (offline,
+	// expired token, ...) we return the error without touching local state,
+	// so the next sync can never overwrite local with stale server flags.
+	// A single STORE round-trip is fast; correctness beats the saved ms.
+	// Each folder's STORE is independent — a failure in one folder must not
+	// roll back the others, so track per-folder results.
+	syncedFolders := make(map[string]bool)
+	var syncErrs []string
+	for folderID, msgs := range byFolder {
+		var err error
+		for attempt := 1; attempt <= 3; attempt++ {
+			err = a.syncFlagsToIMAP(msgs, folderID, "read", isRead)
+			if err == nil {
+				break
+			}
+			log.Warn().Err(err).Int("attempt", attempt).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP, retrying...")
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		if err != nil {
+			log.Error().Err(err).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP after 3 attempts")
+			syncErrs = append(syncErrs, folderID)
+			continue
+		}
+		syncedFolders[folderID] = true
+	}
+	if len(syncedFolders) == 0 {
+		return fmt.Errorf("failed to sync read flags to server: %s", strings.Join(syncErrs, ", "))
+	}
+
+	// Update local DB only for folders whose server STORE succeeded.
+	// Local now always mirrors the server — a later sync can only confirm
+	// it, never flip it back.
+	syncedIDs := make([]string, 0, len(messageIDs))
+	for _, m := range messages {
+		if syncedFolders[m.FolderID] {
+			syncedIDs = append(syncedIDs, m.ID)
+		}
+	}
 	isReadPtr := &isRead
-	if err := a.messageStore.UpdateFlagsBatch(messageIDs, isReadPtr, nil); err != nil {
+	if err := a.messageStore.UpdateFlagsBatch(syncedIDs, isReadPtr, nil); err != nil {
 		return fmt.Errorf("failed to update local flags: %w", err)
 	}
 
-	// Emit event for UI update with flag state
+	// Emit event for UI update with flag state (only the actually-synced IDs)
 	wailsRuntime.EventsEmit(a.ctx, "messages:readChanged", map[string]interface{}{
-		"messageIds": messageIDs,
+		"messageIds": syncedIDs,
 		"isRead":     isRead,
 	})
 
@@ -241,25 +279,6 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 		// The shell badge follows the same counts; recompute after the write so
 		// it drops to zero as soon as the user reads the last unread message.
 		a.refreshUnreadIndicators()
-	}()
-
-	// Sync to IMAP in background with retry
-	go func() {
-		defer recoverPanic("app.actions", "sync flags to IMAP")
-		for folderID, msgs := range byFolder {
-			var err error
-			for attempt := 1; attempt <= 3; attempt++ {
-				err = a.syncFlagsToIMAP(msgs, folderID, "read", isRead)
-				if err == nil {
-					break
-				}
-				log.Warn().Err(err).Int("attempt", attempt).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP, retrying...")
-				time.Sleep(time.Duration(attempt) * time.Second)
-			}
-			if err != nil {
-				log.Error().Err(err).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP after 3 attempts")
-			}
-		}
 	}()
 
 	// Read-flag changes are intentionally NOT pushed onto the undo stack.

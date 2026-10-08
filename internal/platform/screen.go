@@ -10,7 +10,7 @@ package platform
 func DefaultWindowSize() (int, int) {
 	w, h := screenSize()
 	if w <= 0 || h <= 0 {
-		return 1536, 1229
+		return 1824, 918
 	}
-	return w * 3 / 4, h * 24 / 25
+	return w * 19 / 20, h * 17 / 20
 }

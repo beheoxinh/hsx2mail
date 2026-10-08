@@ -527,12 +527,12 @@ func (c *Client) ListSubscribedMailboxes() (map[string]bool, error) {
 // determineFolderType determines the folder type from name and attributes
 func determineFolderType(name string, attrs []imap.MailboxAttr) FolderType {
 	// Check attributes first (RFC 6154 special-use)
+	// ONLY detect core essential types automatically (Drafts, Junk/Spam, Sent, Trash).
+	// Aggregated/special views like All Mail, Archive, Starred/Flagged, Important
+	// are NOT auto-detected so they don't bloat the sidebar or cause heavy duplicate syncs.
+	// Users can explicitly map them in account settings if desired.
 	for _, attr := range attrs {
 		switch attr {
-		case imap.MailboxAttrAll:
-			return FolderTypeAll
-		case imap.MailboxAttrArchive:
-			return FolderTypeArchive
 		case imap.MailboxAttrDrafts:
 			return FolderTypeDrafts
 		case imap.MailboxAttrJunk:
@@ -541,12 +541,10 @@ func determineFolderType(name string, attrs []imap.MailboxAttr) FolderType {
 			return FolderTypeSent
 		case imap.MailboxAttrTrash:
 			return FolderTypeTrash
-		case imap.MailboxAttrFlagged:
-			return FolderTypeStarred
 		}
 	}
 
-	// Fall back to name matching
+	// Fall back to name matching for core folders only
 	switch {
 	case name == "INBOX":
 		return FolderTypeInbox
@@ -558,14 +556,6 @@ func determineFolderType(name string, attrs []imap.MailboxAttr) FolderType {
 		return FolderTypeTrash
 	case containsIgnoreCase(name, "spam") || containsIgnoreCase(name, "junk"):
 		return FolderTypeSpam
-	case containsIgnoreCase(name, "archive"):
-		return FolderTypeArchive
-	case containsIgnoreCase(name, "all mail"):
-		return FolderTypeAll
-	case containsIgnoreCase(name, "starred") || containsIgnoreCase(name, "flagged"):
-		return FolderTypeStarred
-	case containsIgnoreCase(name, "important"):
-		return FolderTypeImportant
 	}
 
 	return FolderTypeFolder
@@ -598,12 +588,15 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 // hasSpecialUseAttr checks if a mailbox has any RFC 6154 SPECIAL-USE attribute
+// for CORE folder types (Drafts, Junk, Sent, Trash). Used for dedup logic:
+// if a core type was claimed via attribute, demote name-only matches.
+// Note: All/Archive/Flagged attributes are intentionally excluded — those
+// folder types are no longer auto-detected (user must map explicitly).
 func hasSpecialUseAttr(attrs []string) bool {
 	for _, attr := range attrs {
 		switch imap.MailboxAttr(attr) {
-		case imap.MailboxAttrAll, imap.MailboxAttrArchive, imap.MailboxAttrDrafts,
-			imap.MailboxAttrJunk, imap.MailboxAttrSent, imap.MailboxAttrTrash,
-			imap.MailboxAttrFlagged:
+		case imap.MailboxAttrDrafts,
+			imap.MailboxAttrJunk, imap.MailboxAttrSent, imap.MailboxAttrTrash:
 			return true
 		}
 	}

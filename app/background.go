@@ -212,6 +212,11 @@ func (a *App) handleIdleNewMail(event imap.MailEvent) {
 		return
 	}
 
+	// Trigger system notification immediately if new mail was detected
+	if newMailInfo != nil && newMailInfo.Count > 0 {
+		a.handleNewMailNotification(*newMailInfo)
+	}
+
 	// Fetch bodies in background (same as SyncFolder does)
 	if folderID != "" {
 		// Get account's sync period

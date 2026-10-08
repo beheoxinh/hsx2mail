@@ -228,9 +228,10 @@ func (e *Engine) SyncFolders(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// persistAutoDetectedMappings checks if the account's folder path mappings are
-// empty and fills them from auto-detected folder types. Only writes to DB when
-// at least one mapping was empty and a detected folder was found.
+// persistAutoDetectedMappings checks if the account's core folder path mappings
+// (Sent, Drafts, Trash, Spam) are empty and fills them from auto-detected folder types.
+// Note: We deliberately do NOT auto-persist Archive, AllMail, or Starred mappings.
+// Those remain empty unless explicitly chosen by the user in settings.
 func (e *Engine) persistAutoDetectedMappings(accountID string) {
 	acc, err := e.accountStore.Get(accountID)
 	if err != nil || acc == nil {
@@ -240,16 +241,18 @@ func (e *Engine) persistAutoDetectedMappings(accountID string) {
 	type mapping struct {
 		current string
 		fType   folder.Type
+		isCore  bool
 	}
 
+	// Only core folders are auto-persisted. Archive, All Mail, and Starred require explicit user configuration.
 	mappings := []mapping{
-		{acc.SentFolderPath, folder.TypeSent},
-		{acc.DraftsFolderPath, folder.TypeDrafts},
-		{acc.TrashFolderPath, folder.TypeTrash},
-		{acc.SpamFolderPath, folder.TypeSpam},
-		{acc.ArchiveFolderPath, folder.TypeArchive},
-		{acc.AllMailFolderPath, folder.TypeAll},
-		{acc.StarredFolderPath, folder.TypeStarred},
+		{acc.SentFolderPath, folder.TypeSent, true},
+		{acc.DraftsFolderPath, folder.TypeDrafts, true},
+		{acc.TrashFolderPath, folder.TypeTrash, true},
+		{acc.SpamFolderPath, folder.TypeSpam, true},
+		{acc.ArchiveFolderPath, folder.TypeArchive, false},
+		{acc.AllMailFolderPath, folder.TypeAll, false},
+		{acc.StarredFolderPath, folder.TypeStarred, false},
 	}
 
 	results := make([]string, len(mappings))
@@ -257,7 +260,7 @@ func (e *Engine) persistAutoDetectedMappings(accountID string) {
 
 	for i, m := range mappings {
 		results[i] = m.current
-		if m.current != "" {
+		if m.current != "" || !m.isCore {
 			continue
 		}
 		detected, _ := e.folderStore.GetByType(accountID, m.fType)

@@ -1407,4 +1407,17 @@ var migrations = []Migration{
 			END;
 		`,
 	},
+	{
+		Version: 44,
+		SQL: `
+			-- Reset auto-persisted auxiliary folder mappings (all_mail_folder_path,
+			-- starred_folder_path, archive_folder_path) so they only exist if configured
+			-- explicitly by the user. Clean up folder types for non-core folders (starred,
+			-- all, important) that were previously auto-detected as special folders.
+			UPDATE accounts SET all_mail_folder_path = '', starred_folder_path = '', archive_folder_path = '';
+
+			UPDATE folders SET folder_type = 'folder'
+			WHERE folder_type IN ('all', 'starred', 'important');
+		`,
+	},
 }

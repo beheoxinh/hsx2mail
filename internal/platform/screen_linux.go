@@ -16,13 +16,16 @@ static void screen_size(int *w, int *h) {
 	if (display == NULL) {
 		return;
 	}
-	GdkScreen *screen = gdk_display_get_default_screen(display);
-	if (screen == NULL) {
-		g_object_unref(display);
-		return;
+	GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
+	if (monitor == NULL && gdk_display_get_n_monitors(display) > 0) {
+		monitor = gdk_display_get_monitor(display, 0);
 	}
-	*w = gdk_screen_get_width(screen);
-	*h = gdk_screen_get_height(screen);
+	if (monitor != NULL) {
+		GdkRectangle geom;
+		gdk_monitor_get_geometry(monitor, &geom);
+		*w = geom.width;
+		*h = geom.height;
+	}
 	g_object_unref(display);
 }
 */

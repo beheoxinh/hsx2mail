@@ -23,16 +23,89 @@ func (a *App) GetFolders(accountID string) ([]*folder.Folder, error) {
 	return folders, nil
 }
 
-// GetFolderTree returns folders as a tree structure
+// sidebarCoreTypes are the only folders shown in the sidebar by default:
+// Inbox, Sent, Drafts, Trash, Spam. Everything else (Archive, All Mail,
+// Starred, Important, custom labels like "FPT mail" or "Bản thảo")
+// stays hidden until the user opts in via Settings → Account →
+// Folder sync or maps the folder explicitly.
+var sidebarCoreTypes = map[folder.Type]bool{
+	folder.TypeInbox:  true,
+	folder.TypeSent:   true,
+	folder.TypeDrafts: true,
+	folder.TypeTrash:  true,
+	folder.TypeSpam:   true,
+}
+
+// GetFolderTree returns folders as a tree structure.
+// By default only the 5 core folders (Inbox, Sent, Drafts, Trash, Spam)
+// are shown. Extra folders appear only when the user opts in via account
+// settings (sync subscription or explicit folder mapping) — this keeps
+// provider junk like "FPT mail", "Bản thảo", All Mail, Starred
+// or Important out of the sidebar until requested.
 func (a *App) GetFolderTree(accountID string) ([]*folder.FolderTree, error) {
 	folders, err := a.folderStore.List(accountID)
 	if err != nil {
 		return nil, err
 	}
 
+	folders = filterSidebarFolders(a, accountID, folders)
+
 	// Sort folders (INBOX first, then special folders, then alphabetically)
 	folder.SortFolders(folders)
 	return folder.BuildTree(folders), nil
+}
+
+// filterSidebarFolders keeps the 5 core folders plus any folder the user
+// explicitly opted into (IMAP subscription or folder mapping). Everything
+// else stays out of the sidebar.
+func filterSidebarFolders(a *App, accountID string, folders []*folder.Folder) []*folder.Folder {
+	acc, err := a.accountStore.Get(accountID)
+	if err != nil || acc == nil {
+		return folders
+	}
+
+	// SyncAllFolders = user wants everything visible.
+	if acc.SyncAllFolders {
+		return folders
+	}
+
+	// Explicit user mappings always pass through (folder mapping UI).
+	mapped := map[string]bool{}
+	for _, p := range []string{
+		acc.SentFolderPath,
+		acc.DraftsFolderPath,
+		acc.TrashFolderPath,
+		acc.SpamFolderPath,
+		acc.ArchiveFolderPath,
+		acc.AllMailFolderPath,
+		acc.StarredFolderPath,
+	} {
+		if p != "" {
+			mapped[p] = true
+		}
+	}
+
+	kept := folders[:0]
+	for _, f := range folders {
+		// Core 5 always visible.
+		if sidebarCoreTypes[f.Type] {
+			kept = append(kept, f)
+			continue
+		}
+		// User-mapped folders always visible.
+		if mapped[f.Path] {
+			kept = append(kept, f)
+			continue
+		}
+		// When the user manages folder sync, subscribed folders are visible.
+		if acc.SyncFoldersEnabled && f.Subscribed {
+			kept = append(kept, f)
+			continue
+		}
+		// Everything else (FPT mail, Bản thảo, Trash-duplicates,
+		// All Mail, Starred, Important...) stays hidden.
+	}
+	return kept
 }
 
 // SyncFolders synchronizes the folder list with the IMAP server

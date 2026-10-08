@@ -499,7 +499,7 @@
     "oauthConnected": "Đã kết nối qua OAuth",
     "folderSync": "Đăng ký đồng bộ thư mục",
     "manageFolderSync": "Quản lý đồng bộ thư mục",
-    "manageFolderSyncHelp": "Khi bật, chọn thư mục nào đồng bộ tự động. Khi tắt, chỉ đồng bộ Hộp thư đến, Bản nháp và Đã gửi.",
+    "manageFolderSyncHelp": "Sidebar chỉ hiện Hộp thư đến, Đã gửi, Bản nháp, Thùng rác và Thư rác. Khi bật, tick thêm thư mục để hiện và đồng bộ. Khi tắt, chỉ đồng bộ 5 thư mục mặc định.",
     "syncAllFolders": "Đồng bộ tất cả thư mục",
     "alwaysSynced": "luôn đồng bộ",
     "folderMapping": "Ánh xạ thư mục",

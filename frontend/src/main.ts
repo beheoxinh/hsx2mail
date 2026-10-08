@@ -5,7 +5,7 @@ import { mount } from 'svelte'
 // @ts-ignore - wailsjs path
 import { IsReady } from '../wailsjs/go/app/App'
 // @ts-ignore - wailsjs path
-import { EventsOn, WindowShow } from '../wailsjs/runtime/runtime'
+import { EventsOn } from '../wailsjs/runtime/runtime'
 
 // Linear bootstrap. Each step waits for the previous to complete; no
 // concurrent retries woven between them. The inline splash markup in
@@ -14,7 +14,6 @@ import { EventsOn, WindowShow } from '../wailsjs/runtime/runtime'
 // show → i18n load → backend ready → app mount).
 async function bootstrap(): Promise<void> {
   await waitForRuntime()
-  WindowShow()
   await initI18n()
   await waitForBackendReady()
   mount(App, { target: document.getElementById('app')! })

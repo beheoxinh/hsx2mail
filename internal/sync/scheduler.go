@@ -444,9 +444,16 @@ func (s *Scheduler) syncAccountInbox(acc *account.Account) {
 		return
 	}
 
-	// Check if there are new messages
-	if updatedInbox != nil && updatedInbox.TotalCount > previousCount {
+	// Check if there are new messages:
+	// Compare TotalCount OR UnreadCount (in case deletions offset new messages)
+	if updatedInbox != nil && (updatedInbox.TotalCount > previousCount || updatedInbox.UnreadCount > inbox.UnreadCount) {
 		newCount := updatedInbox.TotalCount - previousCount
+		if newCount <= 0 {
+			newCount = updatedInbox.UnreadCount - inbox.UnreadCount
+		}
+		if newCount <= 0 {
+			newCount = 1
+		}
 		s.log.Info().
 			Str("account", acc.Name).
 			Int("newMessages", newCount).
@@ -713,9 +720,16 @@ func (s *Scheduler) SyncAccountInboxBlocking(accountID string) (*NewMailInfo, er
 		return nil, err
 	}
 
-	// Check if there are new messages
-	if updatedInbox != nil && updatedInbox.TotalCount > previousCount {
+	// Check if there are new messages:
+	// Compare TotalCount OR UnreadCount (in case deletions offset new messages)
+	if updatedInbox != nil && (updatedInbox.TotalCount > previousCount || updatedInbox.UnreadCount > inbox.UnreadCount) {
 		newCount := updatedInbox.TotalCount - previousCount
+		if newCount <= 0 {
+			newCount = updatedInbox.UnreadCount - inbox.UnreadCount
+		}
+		if newCount <= 0 {
+			newCount = 1
+		}
 		return &NewMailInfo{
 			AccountID:   acc.ID,
 			AccountName: acc.Name,

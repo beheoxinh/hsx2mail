@@ -53,19 +53,26 @@
     expandedAccounts = newExpanded
   })
 
-  // Toggle account expansion
+  // Toggle account expansion (default expanded=true; ?? true keeps
+  // first-render consistent with isAccountExpanded until persisted state loads)
   function toggleAccountExpanded(accountId: string) {
-    const newValue = !expandedAccounts[accountId]
-    expandedAccounts[accountId] = newValue
+    const newValue = !(expandedAccounts[accountId] ?? true)
+    expandedAccounts = { ...expandedAccounts, [accountId]: newValue }
     setAccountExpanded(accountId, newValue)
   }
 
   // Track collapsed state for folders with children (reactive, synced with persisted state)
   let collapsedFolders = $state<Record<string, boolean>>({})
 
-  // Initialize collapsed state from persisted storage and prune stale entries
+  // Initialize collapsed state from persisted storage and prune stale entries.
+  // Guard: skip entirely until folders are actually loaded — on boot
+  // accountStore.accounts exists but every acc.folders is still [], so an
+  // unguarded prune treats every saved entry as stale and wipes the state
+  // (which is why the sidebar always reopened fully expanded).
   $effect(() => {
     const _version = getUIStateVersion()
+    const anyFoldersLoaded = accountStore.accounts.some((acc) => (acc.folders || []).length > 0)
+    if (!anyFoldersLoaded) return
 
     // Collect all folder IDs that exist in current accounts
     const allFolderIds = new Set<string>()
