@@ -532,6 +532,9 @@ func (a *App) moveToFolderCollect(messageIDs []string, destFolderID string, push
 		if len(folderCounts) > 0 {
 			wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
 		}
+		// Moving unread mail changes inbox totals; keep the shell badge and
+		// tray dot in step even while the window is hidden.
+		a.refreshUnreadIndicators()
 	}()
 
 	// Sync to IMAP in background (COPY + DELETE), then sync destination to get correct UIDs.
@@ -1082,6 +1085,9 @@ func (a *App) gmailRemoveLabel(messages []*message.Message) error {
 		if len(folderCounts) > 0 {
 			wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
 		}
+		// Removing a label can drop unread mail out of the inbox; republish the
+		// shell badge and tray dot so a hidden window's tray stays accurate.
+		a.refreshUnreadIndicators()
 	}()
 
 	// IMAP: DELETE from source folders (no COPY — just remove the label)
@@ -1266,6 +1272,9 @@ func (a *App) DeletePermanently(messageIDs []string) error {
 		if len(folderCounts) > 0 {
 			wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
 		}
+		// Deleting unread mail changes inbox totals; republish the shell badge
+		// and tray dot so a hidden window's tray stays accurate.
+		a.refreshUnreadIndicators()
 	}()
 
 	// Delete from IMAP in background

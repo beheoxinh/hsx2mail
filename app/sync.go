@@ -111,6 +111,10 @@ func (a *App) SyncFolder(accountID, folderID string) error {
 			folderID: folderObj.UnreadCount,
 		})
 	}
+	// Keep the shell badge and tray dot in step: a manual sync can pull in
+	// unread mail while the window is hidden in the background, and the tray
+	// dot must not wait for the next window interaction to catch up.
+	a.refreshUnreadIndicators()
 
 	// Start background body fetching (emits progress events for "bodies" phase)
 	// Pass ctx so body fetch can also be cancelled
@@ -260,6 +264,9 @@ func (a *App) SyncAccountComplete(accountID string) error {
 	}
 
 	log.Info().Str("accountID", accountID).Msg("Complete account sync finished")
+	// A full account sync can change inbox unread counts; republish the shell
+	// badge and tray dot so a hidden window's tray stays accurate.
+	a.refreshUnreadIndicators()
 	return nil
 }
 
@@ -431,6 +438,9 @@ func (a *App) SyncAllComplete() error {
 	}
 
 	log.Info().Msg("Complete sync of all accounts and contacts finished")
+	// Full sync touched every inbox; make the shell badge and tray dot reflect
+	// the new totals without waiting for a window interaction.
+	a.refreshUnreadIndicators()
 	return nil
 }
 

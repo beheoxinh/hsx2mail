@@ -56,6 +56,10 @@ func (a *App) initBackgroundSync(ctx context.Context) {
 				folderID: folderObj.UnreadCount,
 			})
 		}
+		// Republish the shell badge + tray dot. The scheduled sync is the only
+		// unread-changing path that runs while the window is hidden, so without
+		// this the tray keeps the dot stale until the next window interaction.
+		a.refreshUnreadIndicators()
 	})
 
 	// Wire up network connectivity check so scheduler skips ticks when offline
