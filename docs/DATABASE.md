@@ -182,6 +182,7 @@ in the same transaction (§6).
 | 42 | 1331 | Index-only migrations for the Phase 2 sync/data-layer work. No | index `idx_messages_needs_body`, `idx_messages_account_date`, `idx_messages_folder_thread_date`, `idx_messages_folder_conv` (+4 more) |
 | 43 | 1385 | Avoid rewriting FTS for every UPDATE when the indexed text/subject are | `INSERT INTO messages_fts` |
 | 44 | 1411 | Reset auto-persisted auxiliary folder mappings (all_mail_folder_path, | `UPDATE accounts`, `UPDATE folders` |
+| 45 | 1424 | Microsoft tenant authority for OAuth tokens. Accounts authorized | `ALTER TABLE oauth_tokens` |
 <!--/GEN:MIGRATIONS-->
 | **44** | 1411 | Current schema version | — |
 
@@ -277,7 +278,7 @@ application tables and must never be written to directly:
 - **`image_allowlist`** — id:INTEGER, type:TEXT, value:TEXT, created_at:DATETIME
 - **`messages`** — id:TEXT, account_id:TEXT, folder_id:TEXT, uid:INTEGER, message_id:TEXT, in_reply_to:TEXT, thread_id:TEXT, subject:TEXT, from_name:TEXT, from_email:TEXT, to_list:TEXT, cc_list:TEXT, bcc_list:TEXT, reply_to:TEXT, date:DATETIME, snippet:TEXT, is_read:INTEGER, is_starred:INTEGER, is_answered:INTEGER, is_forwarded:INTEGER, is_draft:INTEGER, is_deleted:INTEGER, size:INTEGER, has_attachments:INTEGER, body_text:TEXT, body_html:TEXT, received_at:DATETIME, references_list:TEXT, read_receipt_to:TEXT, read_receipt_handled:INTEGER, body_fetched:INTEGER, smime_status:TEXT, smime_signer_email:TEXT, smime_signer_subject:TEXT, smime_raw_body:BLOB, smime_encrypted:INTEGER, pgp_status:TEXT, pgp_signer_email:TEXT, pgp_signer_key_id:TEXT, pgp_raw_body:BLOB, pgp_encrypted:INTEGER, body_failed:INTEGER
 - **`migrations`** — version:INTEGER, applied_at:DATETIME
-- **`oauth_tokens`** — account_id:TEXT, client_config_id:TEXT, provider:TEXT, expires_at:DATETIME, scopes:TEXT, created_at:DATETIME, updated_at:DATETIME, encrypted_access_token:TEXT, encrypted_refresh_token:TEXT
+- **`oauth_tokens`** — account_id:TEXT, client_config_id:TEXT, provider:TEXT, expires_at:DATETIME, scopes:TEXT, created_at:DATETIME, updated_at:DATETIME, encrypted_access_token:TEXT, encrypted_refresh_token:TEXT, tenant:TEXT
 - **`pgp_keys`** — id:TEXT, account_id:TEXT, email:TEXT, key_id:TEXT, fingerprint:TEXT, user_id:TEXT, algorithm:TEXT, key_size:INTEGER, created_at_key:DATETIME, expires_at_key:DATETIME, public_key_armored:TEXT, encrypted_private_key:TEXT, is_default:INTEGER, created_at:DATETIME
 - **`pgp_keyservers`** — id:INTEGER, url:TEXT, order_index:INTEGER, created_at:DATETIME
 - **`pgp_sender_keys`** — id:TEXT, email:TEXT, key_id:TEXT, fingerprint:TEXT, user_id:TEXT, algorithm:TEXT, key_size:INTEGER, created_at_key:DATETIME, expires_at_key:DATETIME, public_key_armored:TEXT, source:TEXT, collected_at:DATETIME, last_seen_at:DATETIME

@@ -197,9 +197,25 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 		return nil
 	}
 
+	// Drop messages already in the requested state. A row the client drew
+	// optimistically, or a re-click on an already-read message, is the common
+	// case — and it needs no IMAP round-trip at all. Without this the STORE
+	// still goes out and the user waits on a server call that changes nothing.
+	pending := filterNeedingReadChange(messages, isRead)
+	if len(pending) == 0 {
+		// Nothing to send to the server, but still confirm to the client: the
+		// optimistic overlay in the frontend is released by this event, and the
+		// local rows are already in the requested state.
+		wailsRuntime.EventsEmit(a.ctx, "messages:readChanged", map[string]interface{}{
+			"messageIds": messageIDs,
+			"isRead":     isRead,
+		})
+		return nil
+	}
+
 	// Group by folder for IMAP operations
 	byFolder := make(map[string][]*message.Message)
-	for _, m := range messages {
+	for _, m := range pending {
 		byFolder[m.FolderID] = append(byFolder[m.FolderID], m)
 	}
 
@@ -219,7 +235,11 @@ func (a *App) setReadStatus(messageIDs []string, isRead bool) error {
 				break
 			}
 			log.Warn().Err(err).Int("attempt", attempt).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP, retrying...")
-			time.Sleep(time.Duration(attempt) * time.Second)
+			// Short backoff: withIMAPRetry already discards a dead connection
+			// and retries on a fresh one, so a long sleep here only adds dead
+			// time between already-recoverable attempts. Without this the user
+			// waits 1s + 2s + 3s before the failure surfaces.
+			time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
 		}
 		if err != nil {
 			log.Error().Err(err).Str("folderID", folderID).Msg("Failed to sync read flags to IMAP after 3 attempts")
@@ -359,6 +379,20 @@ func (a *App) setStarredStatus(messageIDs []string, isStarred bool) error {
 	// reverse with another star/unstar click. Closes #243.
 
 	return nil
+}
+
+// filterNeedingReadChange returns the messages whose IsRead differs from the
+// requested state. Marking an already-correct message is a no-op that would
+// still cost an IMAP round-trip, so the caller skips the STORE when this is
+// empty.
+func filterNeedingReadChange(messages []*message.Message, isRead bool) []*message.Message {
+	out := make([]*message.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.IsRead != isRead {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // syncFlagsToIMAP syncs flag changes to IMAP server

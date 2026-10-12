@@ -69,6 +69,33 @@
   })
   let oauthInitialized = $state(false)
 
+  // Microsoft tenant authority — for corporate Entra ID tenants that block the
+  // shared multi-tenant client (AADSTS700016). "common" preserves stock
+  // behaviour; "custom" reveals a free-text tenant ID / domain input.
+  let msTenantPreset = $state('common')
+  let msTenantCustom = $state('')
+  let msTenantPresets = $state<Array<{ id: string; label: string }>>([
+    { id: 'common', label: 'Common (personal + work/school)' },
+    { id: 'organizations', label: 'Organizations (work/school only)' },
+    { id: 'consumers', label: 'Consumers (personal only)' },
+    { id: 'custom', label: 'Custom tenant ID or domain...' },
+  ])
+  const msTenantEffective = $derived(
+    msTenantPreset === 'custom' ? msTenantCustom.trim() : msTenantPreset
+  )
+  const isMicrosoftOAuth =
+    $derived(selectedProvider !== null && getOAuthProviderType(selectedProvider) === 'microsoft')
+  $effect(() => {
+    if (isMicrosoftOAuth && oauthInitialized && msTenantPresets.length === 4) {
+      oauthStore
+        .getMicrosoftTenantPresets()
+        .then((presets) => {
+          if (presets.length > 0) msTenantPresets = presets
+        })
+        .catch(() => {})
+    }
+  })
+
   // Custom ("bring your own app") OAuth — for a generic IMAP account whose OAuth
   // provider Hsx2Mail does not ship. Primary inputs are the issuer URL + client ID;
   // OIDC discovery resolves the endpoints. Manual endpoint entry is an advanced
@@ -403,7 +430,13 @@
     if (!oauthType) return
 
     try {
-      await oauthStore.startFlow(oauthType)
+      if (oauthType === 'microsoft') {
+        // Route through the tenant-aware flow so corporate tenants work.
+        // loginHint pre-fills the account picker with the typed email.
+        await oauthStore.startMicrosoftFlow(msTenantEffective || 'common', email.trim())
+      } else {
+        await oauthStore.startFlow(oauthType)
+      }
     } catch (err) {
       console.error('Failed to start OAuth flow:', err)
     }
@@ -946,7 +979,35 @@
               {/if}
 
               {#if authMethod === 'oauth2'}
-                {@render oauthFlowStatus()}
+                {#if isMicrosoftOAuth}
+                  <div class="space-y-2">
+                    <Label for="ms-tenant">Microsoft tenant</Label>
+                    <Select.Root bind:value={msTenantPreset}>
+                      <Select.Trigger class="h-10">
+                        <Select.Value placeholder="Select tenant" />
+                      </Select.Trigger>
+                      <Select.Content>
+                        {#each msTenantPresets as preset (preset.id)}
+                          <Select.Item value={preset.id} label={preset.label} />
+                        {/each}
+                      </Select.Content>
+                    </Select.Root>
+                    {#if msTenantPreset === 'custom'}
+                      <Input
+                        id="ms-tenant-custom"
+                        type="text"
+                        placeholder="Tenant ID (GUID) or domain, e.g. contoso.onmicrosoft.com"
+                        bind:value={msTenantCustom}
+                      />
+                    {/if}
+                    <p class="text-xs text-muted-foreground">
+                      Corporate Microsoft 365 accounts often block the shared sign-in.
+                      Pick <span class="font-medium">Custom tenant ID or domain</span> and paste
+                      your organization's tenant ID if sign-in reports AADSTS700016.
+                    </p>
+                  </div>
+                {/if}
+                {@render oauthFlowStatus(isMicrosoftOAuth && msTenantPreset === 'custom' && !msTenantEffective)}
               {:else}
                 <!-- Password field for app password -->
                 <div class="space-y-2">

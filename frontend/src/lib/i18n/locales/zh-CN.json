@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "搜索邮件...",
+    "markingAsRead": "正在标记为已读…",
+    "selectAll": "全选",
     "noMessages": "此文件夹中没有邮件",
     "selectFolder": "选择文件夹以查看邮件",
     "emptyTrash": "清空回收站",

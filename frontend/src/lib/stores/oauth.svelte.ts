@@ -4,6 +4,8 @@
 
 import {
   StartOAuthFlow,
+  StartMicrosoftOAuthFlow,
+  GetMicrosoftTenantPresets,
   StartCustomOAuthFlow,
   CancelOAuthFlow,
   GetOAuthStatus,
@@ -150,6 +152,48 @@ class OAuthStore {
       this.flowState = 'error'
       this.flowError = err instanceof Error ? err.message : String(err)
       throw err
+    }
+  }
+
+  /**
+   * Start a Microsoft OAuth flow against a specific tenant authority.
+   * Empty tenant preserves the stock "common" authority. loginHint pre-fills
+   * the account picker. Used for corporate tenants that block the shared client.
+   */
+  async startMicrosoftFlow(tenant: string, loginHint: string): Promise<void> {
+    try {
+      this.flowState = 'pending'
+      this.flowProvider = 'microsoft'
+      this.flowError = null
+      this.flowResult = null
+      this.authURL = null
+
+      await StartMicrosoftOAuthFlow(tenant, loginHint)
+      // State will be updated via events
+    } catch (err) {
+      this.flowState = 'error'
+      this.flowError = err instanceof Error ? err.message : String(err)
+      throw err
+    }
+  }
+
+  /**
+   * Get Microsoft tenant presets for the tenant picker UI.
+   */
+  async getMicrosoftTenantPresets(): Promise<Array<{ id: string; label: string }>> {
+    try {
+      const presets = await GetMicrosoftTenantPresets()
+      return (presets as Array<Record<string, string>>).map((p) => ({
+        id: p['id'] ?? '',
+        label: p['label'] ?? p['id'] ?? '',
+      }))
+    } catch {
+      return [
+        { id: 'common', label: 'Common (personal + work/school)' },
+        { id: 'organizations', label: 'Organizations (work/school only)' },
+        { id: 'consumers', label: 'Consumers (personal only)' },
+        { id: 'custom', label: 'Custom tenant ID or domain...' },
+      ]
     }
   }
 

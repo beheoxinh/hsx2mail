@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "Search messages...",
+    "markingAsRead": "Marking as read…",
+    "selectAll": "Select all",
     "noMessages": "No messages in this folder",
     "selectFolder": "Select a folder to view messages",
     "emptyTrash": "Empty Trash",

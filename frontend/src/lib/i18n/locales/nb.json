@@ -49,6 +49,8 @@
   },
   "messageList": {
     "searchMessages": "Søk i meldinger…",
+    "markingAsRead": "Merk som lest…",
+    "selectAll": "Velg alle",
     "noMessages": "Ingen meldinger i denne mappen",
     "selectFolder": "Velg en mappe for å se meldinger",
     "emptyTrash": "Tøm papirkurven",

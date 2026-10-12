@@ -19,6 +19,7 @@
   import { isDialogGuardActive } from '$lib/stores/dialogGuard'
   import { getShowViewerCircles, getDarkMailContent } from '$lib/stores/settings.svelte'
   import { getIsDarkActive } from '$lib/stores/theme.svelte'
+  import { beginReadPending, clearReadPending, isReadPending } from '$lib/stores/readStatus.svelte'
 
   interface Props {
     threadId?: string | null
@@ -176,6 +177,7 @@
         if (isOwnOperation) {
           // Clear pending IDs and update local state
           pendingMarkAsReadIds = new Set()
+          clearReadPending(data.messageIds) // Release the optimistic overlay
           if (conversation?.messages) {
             // Update isRead flag locally
             for (const m of conversation.messages) {
@@ -626,9 +628,11 @@
     pendingMarkAsReadIds = new Set(unreadIds)
 
     if (markAsReadDelay === 0) {
-      // Immediate
+      // Immediate — draw the rows as read before the round-trip completes.
+      beginReadPending(unreadIds)
       MarkAsRead(unreadIds).catch(err => {
         console.error('Failed to mark messages as read:', err)
+        clearReadPending(unreadIds) // Revert the optimistic overlay
         pendingMarkAsReadIds = new Set() // Clear on error
       })
     } else {
@@ -636,8 +640,12 @@
       markAsReadTimer = setTimeout(() => {
         // Verify we're still viewing the same conversation
         if (threadId === capturedThreadId) {
+          // The user has now seen it for the configured delay, so the flip is
+          // committed — draw it read before the round-trip returns.
+          beginReadPending(unreadIds)
           MarkAsRead(unreadIds).catch(err => {
             console.error('Failed to mark messages as read:', err)
+            clearReadPending(unreadIds) // Revert the optimistic overlay
             pendingMarkAsReadIds = new Set() // Clear on error
           })
         } else {
@@ -937,12 +945,16 @@
         toasts.success($_('toast.markedAsUnread'))
       }
       if (!allRead) {
+        // Draw the rows as read now — the IMAP round-trip is what the user
+        // was waiting on. clearReadPending releases them on the real event.
+        beginReadPending(messageIds)
         await MarkAsRead(messageIds)
         toasts.success($_('toast.markedAsRead'))
       }
     } catch (err) {
       console.error('Read status toggle failed:', err)
       toasts.error($_('toast.failedToUpdateReadStatus'))
+      if (!allRead) clearReadPending(messageIds) // Revert the optimistic overlay
       pendingMarkAsReadIds = new Set()
     }
   }
@@ -1499,7 +1511,9 @@
                       >&lt;{msg.fromEmail}&gt;</span>
 
                       <!-- Unread indicator -->
-                      {#if !msg.isRead}
+                      {#if isReadPending(msg.id)}
+                        <Icon icon="mdi:loading" class="w-3.5 h-3.5 text-muted-foreground animate-spin motion-reduce:animate-none flex-shrink-0" />
+                      {:else if !msg.isRead}
                         <span class="w-2 h-2 rounded-full bg-primary flex-shrink-0"></span>
                       {/if}
                     </div>

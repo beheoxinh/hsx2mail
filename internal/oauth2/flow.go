@@ -77,6 +77,38 @@ func (m *Manager) StartAuthFlow(ctx context.Context, providerName string) (strin
 	return m.startAuthFlowInternal(ctx, providerName, provider, nil)
 }
 
+// StartAuthFlowWithTenant begins the OAuth2 authorization code flow for a
+// shipped provider, overriding the Microsoft tenant authority and/or the
+// login_hint account picker hint. Empty tenant preserves stock behaviour
+// ("common" for Microsoft); the hint only applies to Microsoft/Google.
+func (m *Manager) StartAuthFlowWithTenant(ctx context.Context, providerName, tenant, loginHint string) (string, error) {
+	if !IsProviderConfigured(providerName) {
+		return "", fmt.Errorf("OAuth provider %s is not configured (missing client ID)", providerName)
+	}
+
+	provider, err := GetProvider(providerName)
+	if err != nil {
+		return "", err
+	}
+
+	if providerName == "microsoft" || provider.Name == "microsoft" {
+		if tenant != "" {
+			tcfg, terr := MicrosoftProviderWithTenant(tenant)
+			if terr != nil {
+				return "", terr
+			}
+			provider = tcfg
+		}
+		if loginHint != "" {
+			provider.LoginHint = loginHint
+		}
+	} else if loginHint != "" && (providerName == "google" || provider.Name == "google") {
+		provider.LoginHint = loginHint
+	}
+
+	return m.startAuthFlowInternal(ctx, providerName, provider, &provider)
+}
+
 // StartAuthFlowWithProvider begins OAuth2 flow with a custom provider config
 // Used for contacts-only OAuth flows that have different scopes
 func (m *Manager) StartAuthFlowWithProvider(ctx context.Context, provider *ProviderConfig) (string, error) {

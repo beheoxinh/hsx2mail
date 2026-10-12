@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "Tìm kiếm thư...",
+    "markingAsRead": "Đang đánh dấu đã đọc…",
+    "selectAll": "Chọn tất cả",
     "noMessages": "Không có thư trong thư mục này",
     "selectFolder": "Chọn thư mục để xem thư",
     "emptyTrash": "Xóa sạch thùng rác",

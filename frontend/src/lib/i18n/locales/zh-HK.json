@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "搜尋郵件...",
+    "markingAsRead": "正在標記為已讀…",
+    "selectAll": "全選",
     "noMessages": "此資料夾中沒有郵件",
     "selectFolder": "選擇資料夾以檢視郵件",
     "emptyTrash": "清空垃圾桶",

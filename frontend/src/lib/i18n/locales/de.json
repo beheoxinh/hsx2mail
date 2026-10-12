@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "Nachrichten suchen...",
+    "markingAsRead": "Als gelesen markieren…",
+    "selectAll": "Alle auswählen",
     "noMessages": "Keine Nachrichten in diesem Ordner",
     "selectFolder": "Ordner auswählen, um Nachrichten anzuzeigen",
     "emptyTrash": "Papierkorb leeren",

@@ -1226,6 +1226,14 @@ export function StartContactsOnlyOAuthFlow(arg1) {
   return window['go']['app']['App']['StartContactsOnlyOAuthFlow'](arg1);
 }
 
+export function StartMicrosoftOAuthFlow(arg1, arg2) {
+  return window['go']['app']['App']['StartMicrosoftOAuthFlow'](arg1, arg2);
+}
+
+export function GetMicrosoftTenantPresets() {
+  return window['go']['app']['App']['GetMicrosoftTenantPresets']();
+}
+
 export function StartCustomOAuthFlow(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['app']['App']['StartCustomOAuthFlow'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

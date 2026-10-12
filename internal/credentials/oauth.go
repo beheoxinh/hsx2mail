@@ -16,6 +16,18 @@ type OAuthTokens struct {
 	RefreshToken string    `json:"refreshToken"` // Stored in keyring (sensitive)
 	ExpiresAt    time.Time `json:"expiresAt"`    // Stored in DB
 	Scopes       []string  `json:"scopes"`       // Stored in DB
+	// Tenant is the Microsoft tenant authority the account authorized
+	// against ("common", "organizations", "consumers", or a tenant ID /
+	// domain). Empty = stock "common" authority. Only meaningful when
+	// Provider == "microsoft"; ignored otherwise.
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// oauthTokensHasTenant reports whether oauth_tokens has the v45 tenant column.
+func (s *Store) oauthTokensHasTenant() bool {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM pragma_table_info('oauth_tokens') WHERE name='tenant'`).Scan(&name)
+	return err == nil && name == "tenant"
 }
 
 // IsExpired returns true if the access token has expired
@@ -57,15 +69,28 @@ func (s *Store) SetOAuthTokens(accountID string, tokens *OAuthTokens) error {
 		return fmt.Errorf("cannot derive client_config_id for provider %q", tokens.Provider)
 	}
 
-	_, err = s.db.Exec(`
-		INSERT INTO oauth_tokens (account_id, client_config_id, provider, expires_at, scopes, updated_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(account_id, client_config_id) DO UPDATE SET
-			provider = excluded.provider,
-			expires_at = excluded.expires_at,
-			scopes = excluded.scopes,
-			updated_at = CURRENT_TIMESTAMP
-	`, accountID, clientConfigID, tokens.Provider, tokens.ExpiresAt, string(scopesJSON))
+	if s.oauthTokensHasTenant() {
+		_, err = s.db.Exec(`
+			INSERT INTO oauth_tokens (account_id, client_config_id, provider, expires_at, scopes, tenant, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(account_id, client_config_id) DO UPDATE SET
+				provider = excluded.provider,
+				expires_at = excluded.expires_at,
+				scopes = excluded.scopes,
+				tenant = excluded.tenant,
+				updated_at = CURRENT_TIMESTAMP
+		`, accountID, clientConfigID, tokens.Provider, tokens.ExpiresAt, string(scopesJSON), tokens.Tenant)
+	} else {
+		_, err = s.db.Exec(`
+			INSERT INTO oauth_tokens (account_id, client_config_id, provider, expires_at, scopes, updated_at)
+			VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(account_id, client_config_id) DO UPDATE SET
+				provider = excluded.provider,
+				expires_at = excluded.expires_at,
+				scopes = excluded.scopes,
+				updated_at = CURRENT_TIMESTAMP
+		`, accountID, clientConfigID, tokens.Provider, tokens.ExpiresAt, string(scopesJSON))
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to store OAuth metadata: %w", err)
@@ -98,18 +123,33 @@ func (s *Store) GetOAuthTokens(accountID string) (*OAuthTokens, error) {
 	var expiresAt sql.NullTime
 	var scopesJSON sql.NullString
 
-	err := s.db.QueryRow(`
-		SELECT provider, expires_at, scopes
-		FROM oauth_tokens
-		WHERE account_id = ?
-		  AND client_config_id IN ('google-mail', 'microsoft-mail', 'custom-mail')
-	`, accountID).Scan(&provider, &expiresAt, &scopesJSON)
-
-	if err == sql.ErrNoRows {
-		return nil, ErrCredentialNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query OAuth metadata: %w", err)
+	var tenant sql.NullString
+	if s.oauthTokensHasTenant() {
+		err := s.db.QueryRow(`
+			SELECT provider, expires_at, scopes, tenant
+			FROM oauth_tokens
+			WHERE account_id = ?
+			  AND client_config_id IN ('google-mail', 'microsoft-mail', 'custom-mail')
+		`, accountID).Scan(&provider, &expiresAt, &scopesJSON, &tenant)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, ErrCredentialNotFound
+			}
+			return nil, fmt.Errorf("failed to query OAuth metadata: %w", err)
+		}
+	} else {
+		err := s.db.QueryRow(`
+			SELECT provider, expires_at, scopes
+			FROM oauth_tokens
+			WHERE account_id = ?
+			  AND client_config_id IN ('google-mail', 'microsoft-mail', 'custom-mail')
+		`, accountID).Scan(&provider, &expiresAt, &scopesJSON)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, ErrCredentialNotFound
+			}
+			return nil, fmt.Errorf("failed to query OAuth metadata: %w", err)
+		}
 	}
 
 	// Get sensitive tokens from keyring (or encrypted DB fallback)
@@ -137,6 +177,7 @@ func (s *Store) GetOAuthTokens(accountID string) (*OAuthTokens, error) {
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		Scopes:       scopes,
+		Tenant:       tenant.String,
 	}
 
 	if expiresAt.Valid {

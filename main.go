@@ -291,3 +291,4 @@ func (h *composerAssetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Serve the file with the modified request
 	http.FileServer(http.FS(subFS)).ServeHTTP(w, modifiedReq)
 }
+// test modified emblem

@@ -298,6 +298,12 @@ type App struct {
 	pendingOAuthTokens *oauth2.TokenResponse
 	pendingOAuthEmail  string
 
+	// Pending Microsoft tenant authority + login hint, set by
+	// StartMicrosoftOAuthFlow and consumed by CompleteOAuthAccountSetup /
+	// SavePendingOAuthTokens so the tenant persists for refresh + reauth.
+	pendingOAuthTenant    string
+	pendingOAuthLoginHint string
+
 	// Pending custom ("bring your own app") OAuth provider config, set by
 	// StartCustomOAuthFlow and consumed by CompleteCustomOAuthAccountSetup so the
 	// endpoints/creds can be persisted per account for later refresh/reauth.

@@ -24,6 +24,7 @@
   // @ts-ignore - wailsjs path
   import { account } from '../../../../wailsjs/go/models'
   import { toasts } from '$lib/stores/toast'
+  import { beginReadPending, clearReadPending } from '$lib/stores/readStatus.svelte'
   import { ConfirmDialog } from '$lib/components/ui/confirm-dialog'
   import FolderPickerDialog from './FolderPickerDialog.svelte'
   import type { Snippet } from 'svelte'
@@ -227,6 +228,9 @@
         await MarkAsUnread(messageIds)
         toasts.success($_('toast.markedAsUnread'))
       } else {
+        // Draw the rows as read now — the IMAP round-trip is what the user
+        // was waiting on. clearReadPending releases them on the real event.
+        beginReadPending(messageIds)
         await MarkAsRead(messageIds)
         toasts.success($_('toast.markedAsRead'))
       }
@@ -234,6 +238,7 @@
     } catch (err) {
       console.error('Read status toggle failed:', err)
       toasts.error($_('toast.failedToUpdateReadStatus'))
+      if (!isRead) clearReadPending(messageIds) // Revert the optimistic overlay
     }
   }
 
@@ -306,6 +311,14 @@
       </ContextMenuItem>
       <ContextMenuSeparator />
     {/if}
+
+    <!-- Selection actions -->
+    <ContextMenuItem
+      onSelect={() => window.dispatchEvent(new CustomEvent('message-list-select-all'))}
+    >
+      <Icon icon="mdi:checkbox-multiple-marked-outline" class="mr-2 h-4 w-4" />
+      {$_('messageList.selectAll')}
+    </ContextMenuItem>
 
     <!-- Move/Delete actions -->
     <ContextMenuItem onSelect={handleArchive}>

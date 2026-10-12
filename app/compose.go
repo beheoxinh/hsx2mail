@@ -182,6 +182,13 @@ func (ops *composeOps) getValidOAuthToken(ctx context.Context, accountID string)
 // the prior inline call, so shipped accounts behave exactly as before.
 func (ops *composeOps) refreshOAuthToken(accountID string, tokens *credentials.OAuthTokens) (*oauth2.TokenResponse, error) {
 	if tokens.Provider != customOAuthProviderName {
+		if tokens.Provider == "microsoft" && tokens.Tenant != "" {
+			cfg, terr := oauth2.MicrosoftProviderWithTenant(tokens.Tenant)
+			if terr != nil {
+				return nil, terr
+			}
+			return ops.oauth2Manager.RefreshTokenWithProvider(cfg, tokens.RefreshToken)
+		}
 		return ops.oauth2Manager.RefreshToken(tokens.Provider, tokens.RefreshToken)
 	}
 

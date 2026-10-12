@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "Hledat zprávy...",
+    "markingAsRead": "Označování jako přečtené…",
+    "selectAll": "Vybrat vše",
     "noMessages": "V této složce nejsou žádné zprávy",
     "selectFolder": "Vyberte složku pro zobrazení zpráv",
     "emptyTrash": "Vyprázdnit koš",

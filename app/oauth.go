@@ -105,6 +105,89 @@ func (a *App) StartOAuthFlow(provider string) error {
 	return nil
 }
 
+// StartMicrosoftOAuthFlow initiates the Microsoft OAuth2 flow against a specific
+// tenant authority, with an optional login_hint email. Empty tenant preserves
+// the stock "common" authority. The selected tenant is stashed alongside the
+// pending tokens so CompleteOAuthAccountSetup persists it for later refresh
+// and re-authorization. Emits oauth:started / oauth:success / oauth:error.
+func (a *App) StartMicrosoftOAuthFlow(tenant, loginHint string) error {
+	log := logging.WithComponent("app.oauth")
+
+	provider := "microsoft"
+	if !oauth2.IsProviderConfigured(provider) {
+		return fmt.Errorf("OAuth provider %s is not configured", provider)
+	}
+
+	normTenant, err := oauth2.NormalizeMicrosoftTenant(tenant)
+	if err != nil {
+		return err
+	}
+
+	log.Info().Str("tenant", normTenant).Str("loginHint", loginHint).Msg("Starting Microsoft OAuth flow")
+
+	authURL, err := a.oauth2Manager.StartAuthFlowWithTenant(a.ctx, provider, normTenant, loginHint)
+	if err != nil {
+		wailsRuntime.EventsEmit(a.ctx, "oauth:error", map[string]interface{}{
+			"provider": provider,
+			"error":    err.Error(),
+		})
+		return fmt.Errorf("failed to start Microsoft OAuth flow: %w", err)
+	}
+
+	a.pendingOAuthTenant = normTenant
+	a.pendingOAuthLoginHint = loginHint
+
+	wailsRuntime.EventsEmit(a.ctx, "oauth:started", map[string]interface{}{
+		"provider": provider,
+		"authURL":  authURL,
+	})
+
+	if perr := platform.PortalOpenURI(authURL); perr != nil {
+		log.Debug().Err(perr).Msg("Portal OpenURI failed, falling back to BrowserOpenURL")
+		wailsRuntime.BrowserOpenURL(a.ctx, authURL)
+	}
+
+	go func() {
+		defer recoverPanic("app.oauth", "Microsoft OAuth callback")
+		tokens, email, err := a.oauth2Manager.WaitForCallback(a.ctx)
+		if err != nil {
+			log.Error().Err(err).Str("provider", provider).Msg("OAuth callback failed")
+			a.pendingOAuthTenant = ""
+			wailsRuntime.EventsEmit(a.ctx, "oauth:error", map[string]interface{}{
+				"provider": provider,
+				"error":    err.Error(),
+			})
+			return
+		}
+
+		a.pendingOAuthTokens = tokens
+		a.pendingOAuthEmail = email
+
+		log.Info().
+			Str("provider", provider).
+			Str("email", email).
+			Msg("OAuth flow completed successfully")
+
+		wailsRuntime.EventsEmit(a.ctx, "oauth:success", map[string]interface{}{
+			"provider":  provider,
+			"email":     email,
+			"expiresIn": tokens.ExpiresIn,
+		})
+	}()
+
+	return nil
+}
+
+// GetMicrosoftTenantPresets returns the selectable tenant presets for the UI.
+func (a *App) GetMicrosoftTenantPresets() []map[string]string {
+	return []map[string]string{
+		{"id": "common", "label": "Common (personal + work/school)"},
+		{"id": "organizations", "label": "Organizations (work/school only)"},
+		{"id": "consumers", "label": "Consumers (personal only)"},
+		{"id": "custom", "label": "Custom tenant ID or domain..."},
+	}
+}
+
 // CompleteOAuthAccountSetup completes account setup after successful OAuth flow.
 // This should be called by the frontend after receiving oauth:success event.
 // It creates the account and saves the OAuth tokens from the completed flow.
@@ -213,6 +296,7 @@ func (a *App) CompleteOAuthAccountSetup(provider, email, accountName, displayNam
 		RefreshToken: a.pendingOAuthTokens.RefreshToken,
 		ExpiresAt:    expiresAt,
 		Scopes:       providerConfig.Scopes,
+		Tenant:       a.pendingOAuthTenant,
 	}
 
 	log.Debug().
@@ -240,6 +324,8 @@ func (a *App) CompleteOAuthAccountSetup(provider, email, accountName, displayNam
 
 	// Clear pending tokens
 	a.pendingOAuthTokens = nil
+	a.pendingOAuthTenant = ""
+	a.pendingOAuthLoginHint = ""
 	a.pendingOAuthEmail = ""
 
 	log.Info().
@@ -426,6 +512,8 @@ func (a *App) CompleteCustomOAuthAccountSetup(config account.AccountConfig) (*ac
 	a.persistOAuthStableID(acc.ID, a.pendingOAuthTokens)
 
 	a.pendingOAuthTokens = nil
+	a.pendingOAuthTenant = ""
+	a.pendingOAuthLoginHint = ""
 	a.pendingOAuthEmail = ""
 	a.pendingCustomProvider = nil
 
@@ -482,6 +570,7 @@ func (a *App) SavePendingOAuthTokens(accountID string) error {
 		RefreshToken: a.pendingOAuthTokens.RefreshToken,
 		ExpiresAt:    expiresAt,
 		Scopes:       scopes,
+		Tenant:       a.pendingOAuthTenant,
 	}
 
 	if err := a.credStore.SetOAuthTokens(accountID, tokens); err != nil {
@@ -508,6 +597,8 @@ func (a *App) SavePendingOAuthTokens(accountID string) error {
 
 	// Clear pending tokens
 	a.pendingOAuthTokens = nil
+	a.pendingOAuthTenant = ""
+	a.pendingOAuthLoginHint = ""
 	a.pendingOAuthEmail = ""
 
 	return nil
@@ -522,6 +613,8 @@ func (a *App) CancelOAuthFlow() {
 
 	// Clear any pending tokens
 	a.pendingOAuthTokens = nil
+	a.pendingOAuthTenant = ""
+	a.pendingOAuthLoginHint = ""
 	a.pendingOAuthEmail = ""
 
 	wailsRuntime.EventsEmit(a.ctx, "oauth:cancelled", nil)
@@ -646,6 +739,18 @@ func (a *App) ReauthorizeAccount(accountID string) error {
 			return fmt.Errorf("could not load custom OAuth provider for account")
 		}
 		return a.StartCustomOAuthFlow(cfg.AuthURL, cfg.TokenURL, cfg.UserinfoEndpoint, cfg.Scopes, cfg.ClientID, cfg.ClientSecret)
+	}
+
+	// Microsoft accounts authorized against a tenant-specific authority must
+	// re-authorize against the same authority. Fall back to the stock flow.
+	if provider == "microsoft" {
+		var tenant string
+		if toks, terr := a.credStore.GetOAuthTokens(accountID); terr == nil && toks != nil {
+			tenant = toks.Tenant
+		}
+		if tenant != "" {
+			return a.StartMicrosoftOAuthFlow(tenant, acc.Email)
+		}
 	}
 
 	// Start OAuth flow - frontend will handle storing new tokens

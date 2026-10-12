@@ -48,6 +48,7 @@
   import { smtp, folder, certificate } from '../wailsjs/go/models'
   // @ts-ignore - wailsjs runtime
   import { WindowShow, WindowHide, EventsOn } from '../wailsjs/runtime/runtime'
+  import { beginReadPending, clearReadPending } from '$lib/stores/readStatus.svelte'
   import { _ } from '$lib/i18n'
 
   // Component refs for keyboard navigation. Plain `let` (not $state) is
@@ -1432,6 +1433,9 @@
 
   async function handleBulkMarkRead(messageIds: string[]) {
     try {
+      // Draw the rows as read now — the IMAP round-trip is what the user was
+      // waiting on. clearReadPending releases them on the real event.
+      beginReadPending(messageIds)
       await MarkAsRead(messageIds)
       addToast({ type: 'success', message: $_('toast.markedAsRead') })
       messageListRef?.clearChecked()
@@ -1439,6 +1443,7 @@
     } catch (err) {
       console.error('Mark as read failed:', err)
       addToast({ type: 'error', message: $_('toast.failedToMarkAsRead') })
+      clearReadPending(messageIds) // Revert the optimistic overlay
     }
   }
 

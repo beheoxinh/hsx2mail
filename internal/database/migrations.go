@@ -1420,4 +1420,15 @@ var migrations = []Migration{
 			WHERE folder_type IN ('all', 'starred', 'important');
 		`,
 	},
+	{
+		Version: 45,
+		SQL: `
+			-- Microsoft tenant authority for OAuth tokens. Accounts authorized
+			-- against a tenant-specific endpoint (e.g. a corporate Entra ID
+			-- tenant that blocks the shared multi-tenant client) must refresh
+			-- against the same authority, otherwise token refresh fails.
+			-- Empty = stock "common" authority, so existing rows keep working.
+			ALTER TABLE oauth_tokens ADD COLUMN tenant TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }

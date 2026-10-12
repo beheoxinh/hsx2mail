@@ -73,6 +73,7 @@ function makeConversations(n: number) {
     ...conversationFixture,
     id: `c${i}`,
     threadId: `t${i}`,
+    messageIds: [`m${i}`],
     uid: i + 1,
     subject: `Subject ${i}`,
     snippet: `Snippet ${i}`,
@@ -201,6 +202,34 @@ describe('MessageList keyboard navigation', () => {
     component.clearChecked()
     await waitFor(() => expect(component.hasCheckedMessages()).toBe(false))
   })
+
+  it('toggleSelectAll selects every row then clears them', async () => {
+    configure(3)
+    const { component } = render(MessageList, { props: { accountId: 'a1', folderId: 'f1' } })
+    await waitFor(() => expect(rows().length).toBe(3))
+
+    expect(component.isAllChecked()).toBe(false)
+    component.toggleSelectAll()
+    await waitFor(() => expect(component.isAllChecked()).toBe(true))
+    expect(component.getCheckedMessageIds().length).toBe(3)
+
+    component.toggleSelectAll()
+    await waitFor(() => expect(component.hasCheckedMessages()).toBe(false))
+    expect(component.isAllChecked()).toBe(false)
+  })
+
+  it('window select-all request drives the same toggle the header uses', async () => {
+    configure(3)
+    const { component } = render(MessageList, { props: { accountId: 'a1', folderId: 'f1' } })
+    await waitFor(() => expect(rows().length).toBe(3))
+
+    window.dispatchEvent(new CustomEvent('message-list-select-all'))
+    await waitFor(() => expect(component.isAllChecked()).toBe(true))
+
+    window.dispatchEvent(new CustomEvent('message-list-select-all'))
+    await waitFor(() => expect(component.hasCheckedMessages()).toBe(false))
+  })
+
 
   it('canUndo is false until something is checked', async () => {
     configure(3)

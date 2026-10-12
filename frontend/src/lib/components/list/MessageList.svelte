@@ -17,6 +17,7 @@
   import { message } from '../../../../wailsjs/go/models'
   // @ts-ignore - wailsjs runtime
   import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime'
+  import { clearReadPending } from '$lib/stores/readStatus.svelte'
   import type { MessageListSortOrder } from '$lib/stores/settings.svelte'
   import { getMessageListDensity, getMessageListSortOrder, setMessageListSortOrder, getShowMessageListProfilePics } from '$lib/stores/settings.svelte'
   import { contactPhotos } from '$lib/stores/contactPhotos.svelte'
@@ -174,6 +175,8 @@
 
   // Listen for folder sync events from backend
   onMount(() => {
+    window.addEventListener('message-list-select-all', onSelectAllRequest)
+
     EventsOn('folder:synced', (data: { accountId: string; folderId: string }) => {
       // Reload if this is the current folder, or unified inbox when an inbox folder synced
       if ((isUnifiedView && isInboxFolder(data.accountId, data.folderId)) || (!isUnifiedView && accountId && folderId && data.accountId === accountId && data.folderId === folderId)) {
@@ -192,6 +195,10 @@
     // Listen for message read-state changes. Star changes ride their own
     // `messages:starredChanged` event and don't affect unread counts here.
     EventsOn('messages:readChanged', (data: { messageIds: string[], isRead: boolean }) => {
+      // The backend confirmed the flip — drop the optimistic overlay so rows
+      // stop showing the spinner and follow the real DB state from here on.
+      clearReadPending(data.messageIds)
+
       // Update conversations locally instead of reloading from DB
       let anyUpdated = false
       for (const c of conversations) {
@@ -259,6 +266,7 @@
   let dialogGuardInterval: ReturnType<typeof setInterval> | null = null
 
   onDestroy(() => {
+    window.removeEventListener('message-list-select-all', onSelectAllRequest)
     EventsOff('folder:synced')
     EventsOff('messages:updated')
     EventsOff('messages:readChanged')
@@ -1233,6 +1241,37 @@
     checkedThreadIds = new Set(activeList.map(c => c.threadId))
   }
 
+  /** Every row in the active list is checked (and there is at least one). */
+  const allChecked = $derived(activeList.length > 0 && checkedThreadIds.size >= activeList.length)
+
+  /** Some but not all rows are checked — drives the indeterminate header box. */
+  const someChecked = $derived(checkedThreadIds.size > 0 && !allChecked)
+
+  /** Header checkbox state — exported so the header contract is testable. */
+  export function isAllChecked(): boolean {
+    return allChecked
+  }
+
+  /** True while only some rows are checked (header box shows indeterminate). */
+  export function isSomeChecked(): boolean {
+    return someChecked
+  }
+
+  /** Header checkbox: select every loaded row, or clear if all are already on. */
+  export function toggleSelectAll() {
+    if (allChecked) {
+      clearChecked()
+      return
+    }
+    selectAll()
+  }
+
+  // Context menu offers "Select all" without a reference to this component, so
+  // it signals through a window event — same pattern as load-remote-images.
+  function onSelectAllRequest() {
+    toggleSelectAll()
+  }
+
   // Open context menu for the currently selected conversation row
   export function openContextMenu() {
     if (!selectedThreadId || !listContainerRef) return
@@ -1432,6 +1471,28 @@
   <!-- Header -->
   <div class="flex items-center justify-between px-4 py-3 border-b border-border">
     <div class="flex items-center gap-2">
+      <!-- Select all — indeterminate while only some rows are checked. Sits
+           ahead of the title, no label; the tooltip carries the name. -->
+      {#if !isSearchMode && activeList.length > 0}
+        <button
+          type="button"
+          class="p-1 -ml-1 rounded-md hover:bg-muted transition-colors flex-shrink-0"
+          title={$_('messageList.selectAll')}
+          aria-label={$_('messageList.selectAll')}
+          aria-checked={allChecked}
+          role="checkbox"
+          onclick={toggleSelectAll}
+        >
+          <Icon
+            icon={allChecked
+              ? 'mdi:checkbox-marked'
+              : someChecked
+                ? 'mdi:checkbox-indeterminate'
+                : 'mdi:checkbox-blank-outline'}
+            class="w-5 h-5 {allChecked || someChecked ? 'text-primary' : 'text-muted-foreground'}"
+          />
+        </button>
+      {/if}
       {#if showFolderToggle}
         <button
           class="p-1.5 -ml-1 rounded-md hover:bg-muted transition-colors"

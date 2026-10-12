@@ -11,6 +11,7 @@
   import { toasts } from '$lib/stores/toast'
   import { getAccentBarUnread, getShowMessageListCircles, getShowMessageListProfilePics } from '$lib/stores/settings.svelte'
   import { contactPhotos } from '$lib/stores/contactPhotos.svelte'
+  import { isReadPending } from '$lib/stores/readStatus.svelte'
 
   interface Props {
     conversation: message.Conversation
@@ -209,7 +210,17 @@
     onCheck(!checked, e)
   }
 
-  const hasUnread = $derived((conversation.unreadCount || 0) > 0)
+  const conversationMessageIds = $derived(
+    conversation.messageIds || conversation.messages?.map((m) => m.id) || []
+  )
+
+  // Read-flip in flight (MarkAsRead is busy round-tripping to IMAP). The row
+  // renders as read with a spinner; clears when the backend emits.
+  const readPending = $derived(conversationMessageIds.some((id) => isReadPending(id)))
+
+  // Local-only display unread: optimistic overlay wins over the stored count,
+  // so the row switches the instant the user opens it, not after IMAP replies.
+  const hasUnread = $derived(((conversation.unreadCount || 0) > 0) && !readPending)
 
   // Get message IDs from the conversation for context menu
   // Use messageIds field (populated by ListConversationsByFolder), fallback to messages array
@@ -280,17 +291,23 @@
   >
     <!-- Checkbox (visible on hover or when checked) -->
     <div
-      class="{densityClasses.checkbox[density]} flex-shrink-0 flex items-center justify-center self-center {checked
+      class="{densityClasses.checkbox[density]} flex-shrink-0 flex items-center justify-center self-center {checked || readPending
         ? 'opacity-100'
         : 'opacity-0 group-hover:opacity-40 hover:!opacity-100 max-[767px]:opacity-40 max-[767px]:active:opacity-100'} transition-opacity duration-200"
+      aria-hidden={readPending ? 'true' : 'false'}
     >
       <button
         class="{densityClasses.checkboxInner[density]} rounded border {checked
           ? 'bg-primary border-primary'
           : 'border-muted-foreground hover:border-primary'} flex items-center justify-center transition-colors duration-200"
         onclick={handleCheckboxClick}
+        disabled={readPending}
+        aria-busy={readPending ? 'true' : 'false'}
+        title={readPending ? $_('messageList.markingAsRead') : undefined}
       >
-        {#if checked}
+        {#if readPending}
+          <Icon icon="mdi:loading" class="{densityClasses.checkIcon[density]} animate-spin motion-reduce:animate-none" />
+        {:else if checked}
           <Icon icon="mdi:check" class="{densityClasses.checkIcon[density]} text-primary-foreground" />
         {/if}
       </button>
@@ -365,6 +382,14 @@
 
         <!-- Indicators -->
         <div class="flex items-center gap-1 flex-shrink-0">
+          {#if readPending}
+            <span title={$_('messageList.markingAsRead')}>
+              <Icon
+                icon="mdi:loading"
+                class="{densityClasses.icon[density]} text-muted-foreground animate-spin motion-reduce:animate-none"
+              />
+            </span>
+          {/if}
           {#if isNonLocal}
             <span title={$_('search.notSyncedLocally')}>
               <Icon icon="mdi:cloud-outline" class="{densityClasses.icon[density]} text-muted-foreground" />

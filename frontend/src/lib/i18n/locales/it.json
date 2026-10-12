@@ -62,6 +62,8 @@
   },
   "messageList": {
     "searchMessages": "Cerca messaggi...",
+    "markingAsRead": "Segno di lettura…",
+    "selectAll": "Seleziona tutto",
     "noMessages": "Nessun messaggio in questa cartella",
     "selectFolder": "Seleziona una cartella per visualizzare i messaggi",
     "emptyTrash": "Svuota cestino",

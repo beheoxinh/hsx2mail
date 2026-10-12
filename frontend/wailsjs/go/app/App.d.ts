@@ -631,6 +631,8 @@ export function Star(arg1:Array<string>):Promise<void>;
 
 export function StartContactsOnlyOAuthFlow(arg1:string):Promise<void>;
 
+export function StartMicrosoftOAuthFlow(arg1:string,arg2:string):Promise<void>;
+export function GetMicrosoftTenantPresets():Promise<Array<{[key: string]: string}>>;
 export function StartCustomOAuthFlow(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6:string):Promise<void>;
 
 export function StartOAuthFlow(arg1:string):Promise<void>;
