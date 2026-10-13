@@ -80,6 +80,36 @@ func (a *App) UpdateLocalFlags(messageIDs []string, isRead, isStarred *bool) err
 			"messageIds": messageIDs,
 			"isRead":     *isRead,
 		})
+		// The sidebar badge follows folders:countsChanged, not
+		// messages:readChanged. Recompute the affected folders' unread counts
+		// and emit them, or an undone read-flip leaves the badge showing the
+		// pre-undo number until the next sync. Mirrors the count path in
+		// app/actions.go setReadStatus.
+		if msgs, gerr := a.messageStore.GetByIDs(messageIDs); gerr == nil {
+			folderCounts := make(map[string]int)
+			seen := make(map[string]bool)
+			for _, msg := range msgs {
+				if seen[msg.FolderID] {
+					continue
+				}
+				seen[msg.FolderID] = true
+				folderObj, ferr := a.folderStore.Get(msg.FolderID)
+				if ferr != nil || folderObj == nil {
+					continue
+				}
+				unreadCount, cerr := a.messageStore.CountUnreadByFolder(msg.FolderID)
+				if cerr != nil {
+					continue
+				}
+				if uerr := a.folderStore.UpdateCounts(msg.FolderID, folderObj.TotalCount, unreadCount); uerr != nil {
+					continue
+				}
+				folderCounts[msg.FolderID] = unreadCount
+			}
+			if len(folderCounts) > 0 {
+				wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
+			}
+		}
 	}
 	if isStarred != nil {
 		wailsRuntime.EventsEmit(a.ctx, "messages:starredChanged", map[string]interface{}{

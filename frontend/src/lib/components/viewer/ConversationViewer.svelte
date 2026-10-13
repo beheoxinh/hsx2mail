@@ -19,7 +19,7 @@
   import { isDialogGuardActive } from '$lib/stores/dialogGuard'
   import { getShowViewerCircles, getDarkMailContent } from '$lib/stores/settings.svelte'
   import { getIsDarkActive } from '$lib/stores/theme.svelte'
-  import { beginReadPending, clearReadPending, isReadPending } from '$lib/stores/readStatus.svelte'
+  import { beginReadPending, clearReadPending, countReadFlips, isReadPending } from '$lib/stores/readStatus.svelte'
 
   interface Props {
     threadId?: string | null
@@ -180,13 +180,14 @@
           clearReadPending(data.messageIds) // Release the optimistic overlay
           if (conversation?.messages) {
             // Update isRead flag locally
+            const affected = countReadFlips(conversation.messages, data.messageIds, data.isRead)
             for (const m of conversation.messages) {
-              if (data.messageIds.includes(m.id)) {
-                m.isRead = data.isRead
-              }
+              if (data.messageIds.includes(m.id)) m.isRead = data.isRead
             }
-            // Update conversation unread count
-            const delta = data.isRead ? -data.messageIds.length : data.messageIds.length
+            // Move the unread badge by the rows this conversation actually
+            // flipped, not by data.messageIds.length (which also counts ids
+            // from other conversations, inflating the count).
+            const delta = data.isRead ? -affected : affected
             conversation.unreadCount = Math.max(0, (conversation.unreadCount || 0) + delta)
             // Trigger reactivity
             conversation = conversation
@@ -629,7 +630,7 @@
 
     if (markAsReadDelay === 0) {
       // Immediate — draw the rows as read before the round-trip completes.
-      beginReadPending(unreadIds)
+      beginReadPending(unreadIds, 'read')
       MarkAsRead(unreadIds).catch(err => {
         console.error('Failed to mark messages as read:', err)
         clearReadPending(unreadIds) // Revert the optimistic overlay
@@ -642,7 +643,7 @@
         if (threadId === capturedThreadId) {
           // The user has now seen it for the configured delay, so the flip is
           // committed — draw it read before the round-trip returns.
-          beginReadPending(unreadIds)
+          beginReadPending(unreadIds, 'read')
           MarkAsRead(unreadIds).catch(err => {
             console.error('Failed to mark messages as read:', err)
             clearReadPending(unreadIds) // Revert the optimistic overlay
@@ -947,7 +948,7 @@
       if (!allRead) {
         // Draw the rows as read now — the IMAP round-trip is what the user
         // was waiting on. clearReadPending releases them on the real event.
-        beginReadPending(messageIds)
+        beginReadPending(messageIds, 'read')
         await MarkAsRead(messageIds)
         toasts.success($_('toast.markedAsRead'))
       }

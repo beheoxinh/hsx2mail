@@ -1435,7 +1435,7 @@
     try {
       // Draw the rows as read now — the IMAP round-trip is what the user was
       // waiting on. clearReadPending releases them on the real event.
-      beginReadPending(messageIds)
+      beginReadPending(messageIds, 'read')
       await MarkAsRead(messageIds)
       addToast({ type: 'success', message: $_('toast.markedAsRead') })
       messageListRef?.clearChecked()
@@ -1449,12 +1449,19 @@
 
   async function handleBulkMarkUnread(messageIds: string[]) {
     try {
+      // Draw the rows as unread now; the sidebar badge rises immediately and
+      // the backend's folders:countsChanged later overwrites it with the exact
+      // count.
+      beginReadPending(messageIds, 'unread')
       await MarkAsUnread(messageIds)
       addToast({ type: 'success', message: $_('toast.markedAsUnread') })
       messageListRef?.clearChecked()
       messageListRef?.handleActionComplete()
     } catch (err) {
       console.error('Mark as unread failed:', err)
+      clearReadPending(messageIds) // Revert the optimistic overlay
+      messageListRef?.clearChecked()
+      messageListRef?.handleActionComplete()
       addToast({ type: 'error', message: $_('toast.failedToMarkAsUnread') })
     }
   }

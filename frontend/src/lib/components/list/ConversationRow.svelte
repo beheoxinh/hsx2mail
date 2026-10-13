@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade } from 'svelte/transition'
   import Icon from '@iconify/svelte'
   import { formatRelativeDate } from '$lib/utils/date'
   import { _ } from '$lib/i18n'
@@ -289,12 +290,11 @@
     role="button"
     tabindex="0"
   >
-    <!-- Checkbox (visible on hover or when checked) -->
+    <!-- Checkbox (visible on hover, when checked, or while a read-flip is in flight) -->
     <div
       class="{densityClasses.checkbox[density]} flex-shrink-0 flex items-center justify-center self-center {checked || readPending
         ? 'opacity-100'
         : 'opacity-0 group-hover:opacity-40 hover:!opacity-100 max-[767px]:opacity-40 max-[767px]:active:opacity-100'} transition-opacity duration-200"
-      aria-hidden={readPending ? 'true' : 'false'}
     >
       <button
         class="{densityClasses.checkboxInner[density]} rounded border {checked
@@ -303,11 +303,8 @@
         onclick={handleCheckboxClick}
         disabled={readPending}
         aria-busy={readPending ? 'true' : 'false'}
-        title={readPending ? $_('messageList.markingAsRead') : undefined}
       >
-        {#if readPending}
-          <Icon icon="mdi:loading" class="{densityClasses.checkIcon[density]} animate-spin motion-reduce:animate-none" />
-        {:else if checked}
+        {#if checked}
           <Icon icon="mdi:check" class="{densityClasses.checkIcon[density]} text-primary-foreground" />
         {/if}
       </button>
@@ -339,6 +336,19 @@
     <!-- Content -->
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 mb-0.5">
+        <!-- Read-flip spinner: at the front of the header row, immediately left
+             of the title, so an in-flight mark-read reads as part of the
+             message rather than as a trailing indicator. -->
+        {#if readPending}
+          <span
+            class="flex-shrink-0 flex items-center"
+            title={$_('messageList.markingAsRead')}
+            aria-label={$_('messageList.markingAsRead')}
+            transition:fade={{ duration: 120 }}
+          >
+            <Icon icon="mdi:loading" class="{densityClasses.icon[density]} text-muted-foreground animate-spin motion-reduce:animate-none" />
+          </span>
+        {/if}
         <!-- Account Indicator (for unified inbox) -->
         {#if showAccountIndicator && accountColor}
           <span
@@ -382,14 +392,6 @@
 
         <!-- Indicators -->
         <div class="flex items-center gap-1 flex-shrink-0">
-          {#if readPending}
-            <span title={$_('messageList.markingAsRead')}>
-              <Icon
-                icon="mdi:loading"
-                class="{densityClasses.icon[density]} text-muted-foreground animate-spin motion-reduce:animate-none"
-              />
-            </span>
-          {/if}
           {#if isNonLocal}
             <span title={$_('search.notSyncedLocally')}>
               <Icon icon="mdi:cloud-outline" class="{densityClasses.icon[density]} text-muted-foreground" />

@@ -230,7 +230,7 @@
       } else {
         // Draw the rows as read now — the IMAP round-trip is what the user
         // was waiting on. clearReadPending releases them on the real event.
-        beginReadPending(messageIds)
+        beginReadPending(messageIds, 'read')
         await MarkAsRead(messageIds)
         toasts.success($_('toast.markedAsRead'))
       }

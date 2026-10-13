@@ -17,7 +17,7 @@
   import { message } from '../../../../wailsjs/go/models'
   // @ts-ignore - wailsjs runtime
   import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime'
-  import { clearReadPending } from '$lib/stores/readStatus.svelte'
+  import { clearReadPending, setFolderIdResolver } from '$lib/stores/readStatus.svelte'
   import type { MessageListSortOrder } from '$lib/stores/settings.svelte'
   import { getMessageListDensity, getMessageListSortOrder, setMessageListSortOrder, getShowMessageListProfilePics } from '$lib/stores/settings.svelte'
   import { contactPhotos } from '$lib/stores/contactPhotos.svelte'
@@ -177,6 +177,17 @@
   onMount(() => {
     window.addEventListener('message-list-select-all', onSelectAllRequest)
 
+    // Let the optimistic read overlay move the right sidebar badge: it knows a
+    // message id but not which folder that row lives in (the unified inbox
+    // mixes folders across accounts). Read `conversations` live so the mapping
+    // stays correct after a reload or folder switch.
+    setFolderIdResolver((messageId) => {
+      for (const c of conversations) {
+        if ((c.messageIds || []).includes(messageId)) return c.folderId
+      }
+      return null
+    })
+
     EventsOn('folder:synced', (data: { accountId: string; folderId: string }) => {
       // Reload if this is the current folder, or unified inbox when an inbox folder synced
       if ((isUnifiedView && isInboxFolder(data.accountId, data.folderId)) || (!isUnifiedView && accountId && folderId && data.accountId === accountId && data.folderId === folderId)) {
@@ -273,6 +284,7 @@
     EventsOff('fts:progress')
     EventsOff('fts:complete')
     EventsOff('fts:indexing')
+    setFolderIdResolver(null)
     if (reloadTimer) clearTimeout(reloadTimer)
     if (syncReloadTimer) clearTimeout(syncReloadTimer)
     if (searchDebounceTimer) clearTimeout(searchDebounceTimer)

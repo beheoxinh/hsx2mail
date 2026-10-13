@@ -227,6 +227,39 @@ class AccountStore {
   }
 
   /**
+   * Apply an optimistic unread delta to one folder, before the backend's
+   * folders:countsChanged event lands. The message list flips read-state the
+   * instant the user acts (readStatus.svelte.ts), so without this the sidebar
+   * badge trails reality for the whole IMAP round-trip. The absolute count from
+   * the later folders:countsChanged event overwrites whatever we guess here, so
+   * a wrong delta is self-correcting rather than sticky.
+   */
+  applyUnreadDelta(folderId: string, delta: number): void {
+    if (!folderId || delta === 0) return
+    if (this.applyUnreadDeltaInTree(this.accounts.flatMap((a) => a.folders), folderId, delta)) {
+      this.accounts = [...this.accounts]
+    }
+  }
+
+  private applyUnreadDeltaInTree(
+    trees: folder.FolderTree[],
+    folderId: string,
+    delta: number
+  ): boolean {
+    let changed = false
+    for (const tree of trees) {
+      if (tree.folder && tree.folder.id === folderId) {
+        tree.folder.unreadCount = Math.max(0, (tree.folder.unreadCount || 0) + delta)
+        changed = true
+      }
+      if (tree.children && this.applyUnreadDeltaInTree(tree.children, folderId, delta)) {
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  /**
    * Load all accounts from the backend
    */
   async load(): Promise<void> {
