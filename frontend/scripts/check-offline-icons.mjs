@@ -45,7 +45,10 @@ function sourceFiles(dir) {
 const icons = {}
 for (const name of COLLECTION_NAMES) {
   const mod = await import(`@iconify-json/${name}/icons.json`, { with: { type: 'json' } })
-  icons[name] = new Set(Object.keys(mod.default?.icons ?? mod.icons ?? {}))
+  icons[name] = new Set([
+    ...Object.keys(mod.default?.icons ?? mod.icons ?? {}),
+    ...Object.keys(mod.default?.aliases ?? mod.aliases ?? {}),
+  ])
 }
 
 const missing = []
