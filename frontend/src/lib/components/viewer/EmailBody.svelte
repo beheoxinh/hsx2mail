@@ -10,6 +10,7 @@
   import { _ } from '$lib/i18n'
   import { toasts } from '$lib/stores/toast'
   import { getAlwaysLoadImages, getThemeMode } from '$lib/stores/settings.svelte'
+  import { createIframeReadiness } from '$lib/utils/iframeReadiness'
 
   interface Props {
     messageId: string
@@ -29,12 +30,27 @@
   // duration of the view. Only one EmailBody is mounted at a time, so dropping
   // the whole cache on unmount both bounds the memory and stops one message's
   // decrypted content outliving its view.
-  onDestroy(() => clearCache())
+  onDestroy(() => {
+    clearCache()
+    if (readyFallback !== undefined) clearTimeout(readyFallback)
+  })
+
+  // Upper bound on how long the loading skeleton may cover the message when
+  // the iframe never reports readiness (dropped postMessage, stalled document).
+  // Long enough that a slow body fetch still shows the real paint first.
+  const READY_FALLBACK_MS = 1500
 
   // State for remote image handling
   let imagesBlocked = $state(true)
   let iframeElement = $state<HTMLIFrameElement | null>(null)
+  // Readiness bookkeeping for the srcdoc iframe (reload guard + watchdog).
+  // The rules live in $lib/utils/iframeReadiness so they are unit-testable.
+  const iframeState = createIframeReadiness()
   let iframeReady = $state(false)
+  // Watchdog handle: the iframe reports readiness via postMessage, but that
+  // message can be lost when a reload replaces the document mid-flight. The
+  // timer is the escape hatch that guarantees the skeleton is never permanent.
+  let readyFallback: ReturnType<typeof setTimeout> | undefined
 
   // Inline attachment state
   let inlineAttachments = $state<Record<string, string>>({})
@@ -446,6 +462,28 @@ ${processedHtml}
     }
   }
 
+  // The iframe is the authority on when its document is painted, but its
+  // `iframe-ready` postMessage can be dropped when a reload swaps the document
+  // out from under it. Clearing the watchdog on the real signal keeps the
+  // common path immediate, and leaving it armed covers the dropped case.
+  function markIframeReady() {
+    if (readyFallback !== undefined) {
+      clearTimeout(readyFallback)
+      readyFallback = undefined
+    }
+    iframeState.markReady()
+    iframeReady = true
+  }
+
+  function armReadyFallback() {
+    if (readyFallback !== undefined) clearTimeout(readyFallback)
+    readyFallback = setTimeout(() => {
+      readyFallback = undefined
+      iframeState.markReadyByTimeout()
+      iframeReady = true
+    }, READY_FALLBACK_MS)
+  }
+
   function handleIframeMessage(event: MessageEvent) {
     // Only handle messages from this component's iframe
     if (event.source !== iframeElement?.contentWindow) return
@@ -453,7 +491,7 @@ ${processedHtml}
     if (event.data?.type === 'iframe-height' && iframeElement) {
       iframeElement.style.height = `${event.data.height + 20}px`
     } else if (event.data?.type === 'iframe-ready') {
-      iframeReady = true
+      markIframeReady()
     } else if (event.data?.type === 'open-link') {
       handleLinkClick(event.data.url as string)
     } else if (event.data?.type === 'iframe-keydown') {
@@ -594,8 +632,12 @@ ${processedHtml}
     const email = fromEmail
     const hasImages = hasRemoteImages
 
-    // Reset state (was in separate effect — merged to avoid race)
-    iframeReady = false
+    // Reset state (was in separate effect — merged to avoid race).
+    // `iframeReady` is deliberately NOT reset here: this effect re-runs for
+    // reasons that leave the rendered document untouched (theme dependency,
+    // image-allowlist read), and clearing readiness would cover an already
+    // painted message with the skeleton again. The build effect owns
+    // `iframeReady` and only clears it when it actually rewrites the srcdoc.
     lastSentMessageId = null
     inlineAttachments = {}
     imagesBlocked = true
@@ -658,9 +700,16 @@ ${processedHtml}
 
     if (iframeElement && html) {
       const content = buildIframeContent(html, applyDarken)
+      // Re-assigning srcdoc tears the document down and reloads it, which
+      // leaves the pane blank until the new document reports readiness. The
+      // effect re-runs for reasons that do not change the markup (a second
+      // no-op pass, a theme dependency that re-derived to the same string), so
+      // compare first and skip the reload when the bytes are identical.
+      if (!iframeState.write(content)) return
       iframeElement.srcdoc = content
       iframeReady = false
       lastSentMessageId = null
+      armReadyFallback()
     }
   })
 
@@ -794,7 +843,7 @@ ${processedHtml}
     <div class="relative">
       {#if !iframeReady}
         <div
-          class="absolute inset-0 rounded-md bg-muted/40 animate-pulse motion-reduce:animate-none"
+          class="absolute inset-0 z-10 rounded-md bg-muted/40 animate-pulse motion-reduce:animate-none"
           aria-hidden="true"
         ></div>
       {/if}
@@ -802,9 +851,7 @@ ${processedHtml}
         bind:this={iframeElement}
         title={$_('aria.emailContent')}
         sandbox="allow-scripts allow-popups"
-        class="w-full border-0 rounded-md min-h-[100px] transition-opacity duration-150 motion-reduce:transition-none {iframeReady
-          ? 'opacity-100'
-          : 'opacity-0'}"
+        class="w-full border-0 rounded-md min-h-[100px]"
         style="height: 200px; background-color: {iframeOuterBg};"
       ></iframe>
     </div>
