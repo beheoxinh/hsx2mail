@@ -20,6 +20,7 @@
   import { getShowViewerCircles, getDarkMailContent } from '$lib/stores/settings.svelte'
   import { getIsDarkActive } from '$lib/stores/theme.svelte'
   import { beginReadPending, clearReadPending, countReadFlips, isReadPending } from '$lib/stores/readStatus.svelte'
+  import { mapWithConcurrency } from '$lib/utils/concurrency'
 
   interface Props {
     threadId?: string | null
@@ -533,30 +534,52 @@
   }
 
   // Process S/MIME messages on-view (verify/decrypt fresh each time)
-  // Fetch bodies on-demand for messages that don't have them yet
+  // Fetch bodies for messages that don't have them yet (on-demand).
+  //
+  // These are independent IPC round-trips, so run them with a bounded number in
+  // flight instead of one after another: a serial loop makes opening a thread of
+  // N body-less messages cost N round-trips of wall-clock. The limit keeps the
+  // Wails bridge (and the IMAP connection behind it) from being flooded.
+  //
+  // `tid` is captured so a body that arrives after the user switched threads is
+  // dropped — otherwise it would be written into the wrong conversation. This is
+  // the same stale-guard shape `loadConversation` uses.
   async function fetchUnfetchedBodies(messages: messageModels.Message[]) {
-    for (const msg of messages) {
-      if ((msg as any).bodyFetched === false && !msg.bodyHtml && !msg.bodyText) {
-        try {
-          const updated = await FetchMessageBody(msg.id)
-          // Update the message in the conversation if still viewing
-          if (conversation?.messages) {
-            const idx = conversation.messages.findIndex(m => m.id === msg.id)
-            if (idx >= 0 && updated) {
-              conversation.messages[idx] = updated
-              conversation = conversation // trigger reactivity
-            }
-          }
-        } catch (err) {
-          console.error('Failed to fetch body for message:', msg.id, err)
-          // Message may have been deleted from server — remove from conversation display
-          if (conversation?.messages) {
-            conversation.messages = conversation.messages.filter(m => m.id !== msg.id)
-            conversation = conversation // trigger reactivity
-          }
+    const tid = threadId
+    // The message the user is looking at should land first; unread ones are
+    // auto-expanded, so they are next in line.
+    const pending = messages.filter(
+      (msg) => (msg as any).bodyFetched === false && !msg.bodyHtml && !msg.bodyText
+    )
+    if (pending.length === 0) return
+    const ordered = [
+      ...pending.filter((m) => m.isRead === false),
+      ...pending.filter((m) => m.isRead !== false),
+    ]
+
+    const BODY_FETCH_CONCURRENCY = 5
+    await mapWithConcurrency(ordered, BODY_FETCH_CONCURRENCY, async (msg) => {
+      try {
+        const updated = await FetchMessageBody(msg.id)
+        // Update the message in the conversation if still viewing this thread.
+        if (threadId !== tid) return
+        const msgs = conversation?.messages
+        if (!msgs) return
+        const idx = msgs.findIndex((m) => m.id === msg.id)
+        if (idx >= 0 && updated) {
+          msgs[idx] = updated
+          conversation = conversation // trigger reactivity
+        }
+      } catch (err) {
+        console.error('Failed to fetch body for message:', msg.id, err)
+        // Message may have been deleted from server — remove from conversation display
+        if (threadId !== tid) return
+        if (conversation?.messages) {
+          conversation.messages = conversation.messages.filter((m) => m.id !== msg.id)
+          conversation = conversation // trigger reactivity
         }
       }
-    }
+    })
   }
 
   function processSMIMEMessages(messages: messageModels.Message[]) {
@@ -1301,9 +1324,26 @@
       <p class="text-lg">{$_('viewer.selectConversation')}</p>
     </div>
   {:else if loading}
-    <!-- Loading -->
-    <div class="flex items-center justify-center h-full">
-      <Icon icon="mdi:loading" class="w-8 h-8 animate-spin text-muted-foreground" />
+    <!-- Loading skeleton: mirrors the viewer layout (header + message blocks) so
+         opening a mail settles into place instead of flashing an empty pane. -->
+    <div class="flex flex-col h-full animate-pulse motion-reduce:animate-none" aria-hidden="true">
+      <div class="flex items-center gap-3 px-4 py-3 border-b border-border">
+        <div class="w-8 h-8 rounded-full bg-muted"></div>
+        <div class="flex-1 space-y-2">
+          <div class="h-3 w-1/3 rounded bg-muted"></div>
+          <div class="h-2 w-1/2 rounded bg-muted/70"></div>
+        </div>
+      </div>
+      <div class="flex-1 px-4 py-4 space-y-6">
+        {#each [0, 1] as _}
+          <div class="space-y-3">
+            <div class="h-3 w-2/5 rounded bg-muted"></div>
+            <div class="h-2 w-full rounded bg-muted/60"></div>
+            <div class="h-2 w-11/12 rounded bg-muted/60"></div>
+            <div class="h-2 w-3/4 rounded bg-muted/60"></div>
+          </div>
+        {/each}
+      </div>
     </div>
   {:else if error}
     <!-- Error -->

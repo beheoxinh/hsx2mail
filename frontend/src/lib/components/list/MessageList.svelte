@@ -838,7 +838,9 @@
     }
 
     // Normal click - select for viewing, clear checks
-    checkedThreadIds = new Set()
+    if (checkedThreadIds.size > 0) {
+      checkedThreadIds = new Set()
+    }
     selectedThreadId = threadId
 
     // For unified view or search, use real folderId and accountId from conversation data

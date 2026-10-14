@@ -791,13 +791,23 @@ ${processedHtml}
       </div>
     {/if}
 
-    <iframe
-      bind:this={iframeElement}
-      title={$_('aria.emailContent')}
-      sandbox="allow-scripts allow-popups"
-      class="w-full border-0 rounded-md min-h-[100px]"
-      style="height: 200px; background-color: {iframeOuterBg};"
-    ></iframe>
+    <div class="relative">
+      {#if !iframeReady}
+        <div
+          class="absolute inset-0 rounded-md bg-muted/40 animate-pulse motion-reduce:animate-none"
+          aria-hidden="true"
+        ></div>
+      {/if}
+      <iframe
+        bind:this={iframeElement}
+        title={$_('aria.emailContent')}
+        sandbox="allow-scripts allow-popups"
+        class="w-full border-0 rounded-md min-h-[100px] transition-opacity duration-150 motion-reduce:transition-none {iframeReady
+          ? 'opacity-100'
+          : 'opacity-0'}"
+        style="height: 200px; background-color: {iframeOuterBg};"
+      ></iframe>
+    </div>
   {:else if bodyText}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="whitespace-pre-wrap font-sans text-sm text-foreground bg-muted/30 rounded-md p-4"
