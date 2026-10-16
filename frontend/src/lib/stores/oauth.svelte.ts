@@ -20,6 +20,7 @@ import {
 import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
 import { get } from 'svelte/store'
 import { _ } from '$lib/i18n'
+import { oauthErrorText } from '$lib/utils/oauthErrors'
 import { addToast } from './toast'
 
 export type OAuthFlowState = 'idle' | 'pending' | 'success' | 'error' | 'cancelled'
@@ -87,7 +88,7 @@ class OAuthStore {
 
     EventsOn('oauth:error', (data: { provider: string; error: string }) => {
       this.flowState = 'error'
-      this.flowError = data.error
+      this.flowError = oauthErrorText(data.error)
       this.flowResult = null
     })
 
@@ -150,7 +151,7 @@ class OAuthStore {
       // State will be updated via events
     } catch (err) {
       this.flowState = 'error'
-      this.flowError = err instanceof Error ? err.message : String(err)
+      this.flowError = oauthErrorText(err instanceof Error ? err.message : String(err))
       throw err
     }
   }
@@ -172,7 +173,7 @@ class OAuthStore {
       // State will be updated via events
     } catch (err) {
       this.flowState = 'error'
-      this.flowError = err instanceof Error ? err.message : String(err)
+      this.flowError = oauthErrorText(err instanceof Error ? err.message : String(err))
       throw err
     }
   }
@@ -221,7 +222,7 @@ class OAuthStore {
       // State will be updated via events
     } catch (err) {
       this.flowState = 'error'
-      this.flowError = err instanceof Error ? err.message : String(err)
+      this.flowError = oauthErrorText(err instanceof Error ? err.message : String(err))
       throw err
     }
   }

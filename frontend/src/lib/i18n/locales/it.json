@@ -611,7 +611,8 @@
     "certFingerprint": "Impronta digitale:",
     "certExpires": "Scade:",
     "removeTrustedCert": "Rimuovi Certificato attendibili",
-    "removeTrustedCertDescription": "Questo certificato non sarà più attendibile. Le future connessioni a questo server potrebbero richiedere di accettare il certificato di nuovo."
+    "removeTrustedCertDescription": "Questo certificato non sarà più attendibile. Le future connessioni a questo server potrebbero richiedere di accettare il certificato di nuovo.",
+    "notesMicrosoft365": "OAuth per Microsoft 365 / Exchange. La tua organizzazione potrebbe richiedere il consenso dell'amministratore o una registrazione applicativa dedicata; contatta il team IT in caso di errore di accesso."
   },
   "identity": {
     "emailAddresses": "Indirizzi di posta elettronica",
@@ -975,6 +976,13 @@
       "continue": "Continua",
       "successToast": "Accesso in scrittura abilitato per {name}",
       "failureToast": "Impossibile abilitare l'accesso in scrittura: {message}"
+    },
+    "error": {
+      "appNotRegistered": "Questa app non è registrata nel tenant Microsoft 365 della tua organizzazione. Usa una registrazione app del tuo team IT (Impostazioni → Account → OAuth Credentials), o chiedi a IT il consenso amministratore per una versione multi-tenant.",
+      "tenantUnknown": "Microsoft non ha potuto stabilire in quale tenant accedere. Per un account di lavoro, scegli il tenant della tua organizzazione all'avvio dell'accesso invece di lasciare il valore predefinito.",
+      "adminConsent": "La tua organizzazione deve approvare questa app prima che tu possa accedere. Chiedi al team IT il consenso amministratore per i permessi IMAP e SMTP.",
+      "notAssigned": "Il tuo account non ha questa app assegnata. Chiedi al team IT di assegnartela.",
+      "clientSecret": "Questa registrazione app richiede un secret client. Attiva \"Allow public client flows\" nella registrazione app, oppure fornisci il secret."
     }
   }
 }

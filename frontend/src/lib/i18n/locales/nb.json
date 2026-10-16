@@ -598,7 +598,8 @@
     "smtpUseSameAsIncoming": "Samme som innkommende tjener",
     "smtpUsernamePlaceholder": "smtp-bruker@eksempel.com",
     "smtpPasswordPlaceholder": "SMTP-passord",
-    "smtpCredsNote": "Hvis du angir et annet brukernavn og passord for SMTP, kan du endre det i «SMTP-autentisering»-delen under «Tjener»-fanen."
+    "smtpCredsNote": "Hvis du angir et annet brukernavn og passord for SMTP, kan du endre det i «SMTP-autentisering»-delen under «Tjener»-fanen.",
+    "notesMicrosoft365": "OAuth for Microsoft 365 / Exchange. Organisasjonen kan kreve administratorsamtykke eller egen appregistrering; kontakt IT-teamet hvis påloggingen feiler."
   },
   "identity": {
     "emailAddresses": "E-postadresser",
@@ -955,6 +956,13 @@
       "continue": "Continue",
       "successToast": "Write access enabled for {name}",
       "failureToast": "Failed to enable write access: {message}"
+    },
+    "error": {
+      "appNotRegistered": "Denne appen er ikke registrert i organisasjonens Microsoft 365-tenant. Bruk en app-registrering fra IT-teamet (Instillinger → Kontoer → OAuth Credentials), eller be IT om admin-samtykke for en multitenant versjon.",
+      "tenantUnknown": "Microsoft kunne ikke avgjøre hvilken tenant du skal logge inn i. Velg organisasjonens tenant når du starter innloggingen i stedet for å la den stå på standard.",
+      "adminConsent": "Organisasjonen må godkjenne denne appen før du kan logge inn. Be IT-teamet om admin-samtykke for IMAP- og SMTP-tillatelser.",
+      "notAssigned": "Kontoen din har ikke fått tildelt denne appen. Be IT-teamet om å tildele den til deg.",
+      "clientSecret": "Denne app-registreringen forventer en klienthemmelighet. Slå på \"Allow public client flows\" i app-registreringen, eller oppgi hemmeligheten."
     }
   },
   "spellcheck": {

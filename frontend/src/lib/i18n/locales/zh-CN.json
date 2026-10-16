@@ -611,7 +611,8 @@
     "certFingerprint": "指纹：",
     "certExpires": "过期日期：",
     "removeTrustedCert": "移除受信任的证书",
-    "removeTrustedCertDescription": "此证书将不再受信任。以后连接到此服务器时可能需要您再次接受该证书。"
+    "removeTrustedCertDescription": "此证书将不再受信任。以后连接到此服务器时可能需要您再次接受该证书。",
+    "notesMicrosoft365": "Microsoft 365 / Exchange OAuth 登录。你的组织可能要求管理员同意或自定义应用注册；登录失败请联系 IT 团队。"
   },
   "identity": {
     "emailAddresses": "电子邮件地址",
@@ -975,6 +976,13 @@
       "continue": "Continue",
       "successToast": "Write access enabled for {name}",
       "failureToast": "Failed to enable write access: {message}"
+    },
+    "error": {
+      "appNotRegistered": "此应用未在你所在组织的 Microsoft 365 租户中注册。请使用 IT 团队提供的应用注册（设置 → 账户 → OAuth Credentials），或请 IT 对多租户版本授予管理员同意。",
+      "tenantUnknown": "Microsoft 无法确定要登录的租户。工作账户请在开始登录时选择你组织的租户，而不是保留默认值。",
+      "adminConsent": "你的组织必须先批准此应用，你才能登录。请让 IT 团队为 IMAP 和 SMTP 权限授予管理员同意。",
+      "notAssigned": "你的账户未被分配此应用。请让 IT 团队将其分配给你。",
+      "clientSecret": "此应用注册需要客户端密码。请在应用注册中启用 \"Allow public client flows\"，或提供客户端密码。"
     }
   }
 }

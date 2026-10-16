@@ -611,7 +611,8 @@
     "certFingerprint": "Fingerabdruck:",
     "certExpires": "Läuft ab:",
     "removeTrustedCert": "Vertrauenswürdiges Zertifikat entfernen",
-    "removeTrustedCertDescription": "Diesem Zertifikat wird nicht mehr vertraut. Zukünftige Verbindungen zu diesem Server erfordern möglicherweise erneut die Zertifikatsakzeptanz."
+    "removeTrustedCertDescription": "Diesem Zertifikat wird nicht mehr vertraut. Zukünftige Verbindungen zu diesem Server erfordern möglicherweise erneut die Zertifikatsakzeptanz.",
+    "notesMicrosoft365": "OAuth für Microsoft 365 / Exchange. Ihre Organisation kann die Zustimmung des Administrators oder eine eigene App-Registrierung erfordern; wenden Sie sich bei Anmeldefehlern an Ihr IT-Team."
   },
   "identity": {
     "emailAddresses": "E-Mail-Adressen",
@@ -975,6 +976,13 @@
       "continue": "Weiter",
       "successToast": "Schreibzugriff für {name} aktiviert",
       "failureToast": "Schreibzugriff konnte nicht aktiviert werden: {message}"
+    },
+    "error": {
+      "appNotRegistered": "Diese App ist nicht im Microsoft-365-Mandanten Ihrer Organisation registriert. Verwenden Sie eine App-Registrierung Ihres IT-Teams (Einstellungen → Konten → OAuth Credentials) oder bitten Sie IT um Admin-Zustimmung für eine Multi-Tenant-Version.",
+      "tenantUnknown": "Microsoft konnte nicht ermitteln, in welchem Mandanten angemeldet werden soll. Wählen Sie für ein Arbeitskonto den Mandanten Ihrer Organisation, statt bei der Vorgabe zu bleiben.",
+      "adminConsent": "Ihre Organisation muss diese App freigeben, bevor Sie sich anmelden können. Bitten Sie Ihr IT-Team um Admin-Zustimmung für die IMAP- und SMTP-Berechtigungen.",
+      "notAssigned": "Ihrem Konto ist diese App nicht zugeordnet. Bitten Sie Ihr IT-Team, sie Ihnen zuzuweisen.",
+      "clientSecret": "Diese App-Registrierung erwartet ein Client-Secret. Aktivieren Sie \"Allow public client flows\" in der App-Registrierung oder geben Sie das Secret an."
     }
   }
 }

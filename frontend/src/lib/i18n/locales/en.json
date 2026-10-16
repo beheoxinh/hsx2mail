@@ -618,7 +618,8 @@
     "certFingerprint": "Fingerprint:",
     "certExpires": "Expires:",
     "removeTrustedCert": "Remove Trusted Certificate",
-    "removeTrustedCertDescription": "This certificate will no longer be trusted. Future connections to this server may require you to accept the certificate again."
+    "removeTrustedCertDescription": "This certificate will no longer be trusted. Future connections to this server may require you to accept the certificate again.",
+    "notesMicrosoft365": "Microsoft 365 / Exchange OAuth. Your organization may require admin consent or a custom app registration; contact your IT team if login fails."
   },
   "identity": {
     "emailAddresses": "Email Addresses",
@@ -982,6 +983,13 @@
       "continue": "Continue",
       "successToast": "Write access enabled for {name}",
       "failureToast": "Failed to enable write access: {message}"
+    },
+    "error": {
+      "appNotRegistered": "This app isn't registered in your organization's Microsoft 365 tenant. Use an app registration from your IT team (Settings → Accounts → OAuth Credentials), or ask IT to grant admin consent to a multi-tenant version of this app.",
+      "tenantUnknown": "Microsoft couldn't tell which tenant to sign in to. For a work account, pick your organization's tenant when you start the sign-in instead of leaving it on the default.",
+      "adminConsent": "Your organization must approve this app before it can sign in. Ask your IT team to grant admin consent for the IMAP and SMTP permissions.",
+      "notAssigned": "Your account isn't assigned this app. Ask your IT team to assign it to you.",
+      "clientSecret": "This app registration expects a client secret. Turn on \"Allow public client flows\" in the app registration, or provide the secret."
     }
   }
 }

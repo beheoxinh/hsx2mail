@@ -3,6 +3,8 @@ package oauth2
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 // ErrReauthRequired marks a token failure that no retry can fix: the grant was
@@ -26,10 +28,71 @@ type TokenError struct {
 }
 
 func (e *TokenError) Error() string {
-	if e.Description != "" {
-		return fmt.Sprintf("token error %s: %s", e.Code, e.Description)
+	desc := e.Description
+	if desc != "" {
+		if msg, ok := explainEntraError(desc); ok {
+			return fmt.Sprintf("token error %s: %s", e.Code, msg)
+		}
+		return fmt.Sprintf("token error %s: %s", e.Code, desc)
 	}
 	return fmt.Sprintf("token error %s", e.Code)
+}
+
+// Entra ID (Azure AD) failures that a user can actually act on, usually hit
+// when signing into a work/school mailbox whose tenant has not consented to
+// the app. The raw AADSTS text is accurate but describes the server's view
+// ("application not found in the directory"); these carry the code so support
+// can still grep for it, plus the step the user or their admin must take.
+var entraErrorHints = []struct {
+	re   *regexp.Regexp
+	hint string
+}{
+	{
+		re:   regexp.MustCompile(`AADSTS700016:.*?not found in the directory '([^']*)'`),
+		hint: "the app is not registered in tenant %s. Use your organization's own app registration (Settings → OAuth Credentials), or ask IT to grant admin consent to a multi-tenant app.",
+	},
+	{
+		re:   regexp.MustCompile(`AADSTS50059`),
+		hint: "no tenant could be identified for this request. Enterprise Microsoft 365 accounts must pick the right tenant (fpt.com, organizations) instead of leaving it unset.",
+	},
+	{
+		re:   regexp.MustCompile(`AADSTS65001`),
+		hint: "your organization must grant admin consent to this app before it can sign in. Ask your IT administrator to consent to the IMAP and SMTP permissions.",
+	},
+	{
+		re:   regexp.MustCompile(`AADSTS50105`),
+		hint: "your account is not assigned to this application. Ask your IT administrator to assign you to it.",
+	},
+	{
+		re:   regexp.MustCompile(`AADSTS7000218`),
+		hint: "the app registration expects a client secret. Enable public client flows (\"Allow public client flows\" = Yes) on the app registration, or supply the secret.",
+	},
+}
+
+// explainEntraError turns a raw Entra error_description into an actionable
+// sentence. Returns ok=false for descriptions this package has no advice for,
+// so the caller can fall back to the original text.
+func explainEntraError(desc string) (string, bool) {
+	for _, h := range entraErrorHints {
+		m := h.re.FindStringSubmatch(desc)
+		if m == nil {
+			continue
+		}
+		hint := h.hint
+		if strings.Contains(hint, "%s") {
+			tenant := ""
+			if len(m) > 1 {
+				tenant = m[1]
+			}
+			hint = fmt.Sprintf(hint, tenant)
+		}
+		code := desc
+		if i := strings.Index(desc, ":"); i > 0 {
+			code = desc[:i]
+		}
+		return fmt.Sprintf("%s — %s", code, hint), true
+	}
+	return "", false
 }
 
 func (e *TokenError) Unwrap() error { return e.Err }

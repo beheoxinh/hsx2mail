@@ -611,7 +611,8 @@
     "certFingerprint": "Empreinte :",
     "certExpires": "Expire le :",
     "removeTrustedCert": "Retirer le certificat de confiance",
-    "removeTrustedCertDescription": "Ce certificat ne sera plus approuvé. Vous devrez peut-être l'accepter à nouveau lors de la prochaine connexion."
+    "removeTrustedCertDescription": "Ce certificat ne sera plus approuvé. Vous devrez peut-être l'accepter à nouveau lors de la prochaine connexion.",
+    "notesMicrosoft365": "OAuth pour Microsoft 365 / Exchange. Votre organisation peut exiger le consentement administrateur ou une inscription d'application propre ; contactez votre équipe SI si la connexion échoue."
   },
   "identity": {
     "emailAddresses": "Adresses e-mail",
@@ -968,6 +969,13 @@
       "continue": "Continuer",
       "successToast": "Accès en écriture activé pour {name}",
       "failureToast": "Échec de l'activation de l'accès en écriture : {message}"
+    },
+    "error": {
+      "appNotRegistered": "Cette application n'est pas enregistrée dans le locataire Microsoft 365 de votre organisation. Utilisez un enregistrement d'application fourni par votre équipe SI (Paramètres → Comptes → OAuth Credentials), ou demandez à SI le consentement administrateur pour une version multi-locataires.",
+      "tenantUnknown": "Microsoft n'a pas pu déterminer le locataire de connexion. Pour un compte professionnel, choisissez le locataire de votre organisation au démarrage de la connexion plutôt que la valeur par défaut.",
+      "adminConsent": "Votre organisation doit approuver cette application avant que vous puissiez vous connecter. Demandez à votre équipe SI le consentement administrateur pour les autorisations IMAP et SMTP.",
+      "notAssigned": "Votre compte n'a pas accès à cette application. Demandez à votre équipe SI de vous l'attribuer.",
+      "clientSecret": "Cet enregistrement d'application attend un secret client. Activez « Allow public client flows » dans l'enregistrement, ou fournissez le secret."
     }
   },
   "oauthMissing": {

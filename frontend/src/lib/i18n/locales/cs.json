@@ -611,7 +611,8 @@
     "certFingerprint": "Otisk:",
     "certExpires": "Platnost do:",
     "removeTrustedCert": "Odebrat důvěryhodný certifikát",
-    "removeTrustedCertDescription": "Tomuto certifikátu již nebude důvěřováno. Budoucí připojení k tomuto serveru mohou vyžadovat jeho opětovné potvrzení."
+    "removeTrustedCertDescription": "Tomuto certifikátu již nebude důvěřováno. Budoucí připojení k tomuto serveru mohou vyžadovat jeho opětovné potvrzení.",
+    "notesMicrosoft365": "OAuth pro Microsoft 365 / Exchange. Vaše organizace může vyžadovat souhlas správce nebo vlastní registraci aplikace; při selhání přihlášení kontaktujte svůj IT tým."
   },
   "identity": {
     "emailAddresses": "E-mailové adresy",
@@ -975,6 +976,13 @@
       "continue": "Pokračovat",
       "successToast": "Přístup k zápisu byl povolen pro {name}",
       "failureToast": "Nepodařilo se povolit přístup k zápisu: {message}"
+    },
+    "error": {
+      "appNotRegistered": "Tato aplikace není zaregistrována v tenantu Microsoft 365 vaší organizace. Použijte app registration od svého IT týmu (Nastavení → Účty → OAuth Credentials), nebo požádejte IT o admin consent pro multi-tenant verzi.",
+      "tenantUnknown": "Microsoft neurčil, do kterého tenantu se přihlásit. Pro pracovní účet zvolte tenant své organizace při zahájení přihlášení místo výchozí hodnoty.",
+      "adminConsent": "Vaše organizace musí tuto aplikaci schválit, než se budete moci přihlásit. Požádejte svůj IT tým o admin consent pro oprávnění IMAP a SMTP.",
+      "notAssigned": "Vašemu účtu tato aplikace není přiřazena. Požádejte IT tým, aby vám ji přiřadil.",
+      "clientSecret": "Tento app registration vyžaduje client secret. Zapněte \"Allow public client flows\" v app registration, nebo poskytněte secret."
     }
   }
 }

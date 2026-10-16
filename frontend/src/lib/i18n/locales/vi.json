@@ -611,7 +611,8 @@
     "certFingerprint": "Dấu vân tay:",
     "certExpires": "Hết hạn:",
     "removeTrustedCert": "Gỡ chứng chỉ tin cậy",
-    "removeTrustedCertDescription": "Chứng chỉ này sẽ không còn được tin cậy. Các kết nối trong tương lai với máy chủ này có thể yêu cầu bạn chấp nhận lại chứng chỉ."
+    "removeTrustedCertDescription": "Chứng chỉ này sẽ không còn được tin cậy. Các kết nối trong tương lai với máy chủ này có thể yêu cầu bạn chấp nhận lại chứng chỉ.",
+    "notesMicrosoft365": "Đăng nhập OAuth qua Microsoft 365 / Exchange. Tổ chức của bạn có thể yêu cầu admin consent hoặc đăng ký ứng dụng riêng; liên hệ đội IT nếu đăng nhập thất bại."
   },
   "identity": {
     "emailAddresses": "Địa chỉ email",
@@ -975,6 +976,13 @@
       "continue": "Tiếp tục",
       "successToast": "Đã bật quyền ghi cho {name}",
       "failureToast": "Không bật được quyền ghi: {message}"
+    },
+    "error": {
+      "appNotRegistered": "Ứng dụng này chưa được đăng ký trong tenant Microsoft 365 của tổ chức bạn. Hãy dùng app registration do đội IT của bạn cấp (Cài đặt → Tài khoản → OAuth Credentials), hoặc yêu cầu IT cấp admin consent cho bản multi-tenant của ứng dụng.",
+      "tenantUnknown": "Microsoft không xác định được tenant để đăng nhập. Với tài khoản công ty, hãy chọn tenant của tổ chức bạn khi bắt đầu đăng nhập thay vì để mặc định.",
+      "adminConsent": "Tổ chức bạn phải chấp thuận ứng dụng này trước khi đăng nhập được. Hãy yêu cầu đội IT cấp admin consent cho các quyền IMAP và SMTP.",
+      "notAssigned": "Tài khoản của bạn chưa được cấp ứng dụng này. Hãy yêu cầu đội IT gán ứng dụng cho bạn.",
+      "clientSecret": "App registration này yêu cầu client secret. Hãy bật \"Allow public client flows\" trong app registration, hoặc cung cấp secret."
     }
   }
 }

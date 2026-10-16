@@ -69,6 +69,19 @@ export const providers: EmailProvider[] = [
     oauth: { provider: 'microsoft', allowPasswordFallback: false },
   },
   {
+    id: 'microsoft365',
+    name: 'Microsoft 365 / Exchange',
+    icon: 'logos:microsoft-icon',
+    domains: [],
+    imap: { host: 'outlook.office365.com', port: 993, security: 'tls' },
+    smtp: { host: 'smtp.office365.com', port: 587, security: 'starttls' },
+    usernameIsEmail: true,
+    authMethod: 'oauth2',
+    oauth: { provider: 'microsoft', allowPasswordFallback: false },
+    notesKey: 'account.notesMicrosoft365',
+  },
+
+  {
     id: 'yahoo',
     name: 'Yahoo Mail',
     icon: 'logos:yahoo',
@@ -184,8 +197,17 @@ export function detectProvider(email: string): EmailProvider | null {
   const provider = providers.find(
     (p) => p.id !== 'custom' && p.domains.includes(domain)
   )
+  if (provider) return provider
 
-  return provider ?? null
+  // Canonical Microsoft 365 tenant domains (`contoso.onmicrosoft.com`). A
+  // vanity corporate domain (fpt.com, …) cannot be recognised offline —
+  // Google Workspace uses the same shape of address — so those stay null and
+  // the picker offers the explicit "Microsoft 365 / Exchange" entry.
+  if (domain.endsWith('.onmicrosoft.com')) {
+    return getProvider('microsoft365') ?? null
+  }
+
+  return null
 }
 
 /**
