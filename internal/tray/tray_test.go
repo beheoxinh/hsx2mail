@@ -117,3 +117,75 @@ func TestSetUnreadIsIdempotent(t *testing.T) {
 		t.Error("SetUnread(false) did not clear the state")
 	}
 }
+
+// recordIconPublishes swaps the setIcon seam for the duration of the test and
+// returns the slice of icons publish() pushed. The atomics are reset so each
+// test starts from the light-scheme "inbox clear" default.
+func recordIconPublishes(t *testing.T) *[][]byte {
+	t.Helper()
+	var calls [][]byte
+	orig := setIcon
+	setIcon = func(icon []byte) { calls = append(calls, icon) }
+	t.Cleanup(func() {
+		setIcon = orig
+		unread.Store(false)
+		dark.Store(false)
+	})
+	unread.Store(false)
+	dark.Store(false)
+	return &calls
+}
+
+// TestSetUnreadPublishesBothTransitions is the regression test for the
+// inverted Swap guard: clearing the unread state must republish the green
+// tick, not silently keep the red dot on the shell.
+func TestSetUnreadPublishesBothTransitions(t *testing.T) {
+	calls := recordIconPublishes(t)
+
+	SetUnread(true)
+	if len(*calls) != 1 {
+		t.Fatalf("SetUnread(false→true) publishes = %d, want 1", len(*calls))
+	}
+	if !bytes.Equal((*calls)[0], iconUnreadPNG) {
+		t.Error("false→true published the wrong artwork")
+	}
+
+	SetUnread(false)
+	if len(*calls) != 2 {
+		t.Fatalf("SetUnread(true→false) publishes = %d, want 1 more (the clearing must repaint)", len(*calls))
+	}
+	if !bytes.Equal((*calls)[1], iconReadPNG) {
+		t.Error("true→false published the wrong artwork")
+	}
+}
+
+// TestSetUnreadSkipsNoopPublishes keeps the spam guard honest: unchanged
+// states must not touch the StatusNotifierItem bus.
+func TestSetUnreadSkipsNoopPublishes(t *testing.T) {
+	calls := recordIconPublishes(t)
+
+	SetUnread(false) // already false
+	SetUnread(true)
+	SetUnread(true) // repeat
+	if len(*calls) != 1 {
+		t.Fatalf("publishes = %d, want 1 (only the false→true change)", len(*calls))
+	}
+}
+
+// TestSetDarkPublishesBothTransitions applies the same Swap fix to the colour
+// scheme: switching back to light must repaint the black-stroke artwork.
+func TestSetDarkPublishesBothTransitions(t *testing.T) {
+	calls := recordIconPublishes(t)
+
+	SetDark(true)
+	if len(*calls) != 1 || !bytes.Equal((*calls)[0], iconReadDarkPNG) {
+		t.Fatalf("false→true publishes = %d with correct artwork = %v", len(*calls),
+			len(*calls) == 1 && bytes.Equal((*calls)[0], iconReadDarkPNG))
+	}
+
+	SetDark(false)
+	if len(*calls) != 2 || !bytes.Equal((*calls)[1], iconReadPNG) {
+		t.Fatalf("true→false publishes = %d with correct artwork = %v", len(*calls),
+			len(*calls) == 2 && bytes.Equal((*calls)[1], iconReadPNG))
+	}
+}

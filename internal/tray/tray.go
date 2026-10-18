@@ -70,8 +70,13 @@ func iconFor(hasUnread, isDark bool) []byte {
 // publish pushes the current state to the shell. Safe before Start and from any
 // goroutine: fyne systray keeps the payload and does nothing until its event
 // loop exists.
+//
+// setIcon is the single syscall edge of publish; tests swap it to observe
+// publishes without a running systray event loop.
+var setIcon = systray.SetIcon
+
 func publish() {
-	systray.SetIcon(iconFor(unread.Load(), dark.Load()))
+	setIcon(iconFor(unread.Load(), dark.Load()))
 }
 
 // SetUnread switches the tray icon between the two mail states: a red dot while
@@ -79,7 +84,12 @@ func publish() {
 // has not changed, so callers can invoke it on every sync without spamming the
 // StatusNotifierItem bus.
 func SetUnread(hasUnread bool) {
-	if unread.Swap(hasUnread) {
+	// Swap returns the PREVIOUS value, so the no-op case is old == new in
+	// both directions. Guarding on the old value alone (as this once did)
+	// skipped the true→false publish: the dot never cleared after the inbox
+	// did, because the "nothing changed" early-return fired exactly on the
+	// clearing transition.
+	if unread.Swap(hasUnread) == hasUnread {
 		return
 	}
 	publish()
@@ -89,7 +99,9 @@ func SetUnread(hasUnread bool) {
 // dark-scheme (white strokes) renderings. Like SetUnread it is a no-op when
 // nothing changed, and safe to call before Start.
 func SetDark(isDark bool) {
-	if dark.Swap(isDark) {
+	// Same Swap semantics as SetUnread: skip only when the state is
+	// unchanged, so dark→light repaints as well as light→dark.
+	if dark.Swap(isDark) == isDark {
 		return
 	}
 	publish()

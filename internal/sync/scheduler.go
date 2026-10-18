@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -11,6 +12,12 @@ import (
 	"github.com/beheoxinh/hsx2mail/internal/logging"
 	"github.com/rs/zerolog"
 )
+
+// ErrSyncBusy reports that the scheduler already owns this account's sync
+// slot. Callers that react to newly arrived mail (the IDLE handler) must
+// treat it as "retry later" rather than "no new mail" — the in-flight sync
+// may have FETCHed before the new message landed on the server.
+var ErrSyncBusy = errors.New("sync already in progress")
 
 // NewMailInfo contains information about newly arrived mail
 type NewMailInfo struct {
@@ -642,23 +649,34 @@ func (s *Scheduler) TriggerSyncAll() {
 	}
 }
 
+// clearSyncingSlot releases the account slot claimed at the top of
+// SyncAccountInboxBlocking before the cleanup defer is armed (load failures).
+func (s *Scheduler) clearSyncingSlot(accountID string) {
+	s.syncingMu.Lock()
+	delete(s.syncing, accountID)
+	s.syncingMu.Unlock()
+}
+
 // SyncAccountInboxBlocking syncs INBOX and returns new mail info (blocking)
 // This is useful for IDLE-triggered syncs where we want to wait for completion
 func (s *Scheduler) SyncAccountInboxBlocking(accountID string) (*NewMailInfo, error) {
+	// Claim the account's sync slot before loading anything: a second caller
+	// (the IDLE new-mail handler racing a scheduled tick) must observe
+	// ErrSyncBusy and defer its event, not silently receive "no new mail".
+	s.syncingMu.Lock()
+	if s.syncing[accountID] {
+		s.syncingMu.Unlock()
+		s.log.Debug().Str("accountID", accountID).Msg("Sync already in progress, skipping")
+		return nil, ErrSyncBusy
+	}
+	s.syncing[accountID] = true
+	s.syncingMu.Unlock()
+
 	acc, err := s.accountStore.Get(accountID)
 	if err != nil {
+		s.clearSyncingSlot(accountID)
 		return nil, err
 	}
-
-	// Prevent concurrent syncs for the same account
-	s.syncingMu.Lock()
-	if s.syncing[acc.ID] {
-		s.syncingMu.Unlock()
-		s.log.Debug().Str("account", acc.Name).Msg("Sync already in progress, skipping")
-		return nil, nil
-	}
-	s.syncing[acc.ID] = true
-	s.syncingMu.Unlock()
 
 	// Create a cancellable context with timeout for this sync operation
 	// 30 minute timeout prevents syncs from running forever if connection hangs

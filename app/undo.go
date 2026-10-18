@@ -108,6 +108,9 @@ func (a *App) UpdateLocalFlags(messageIDs []string, isRead, isStarred *bool) err
 			}
 			if len(folderCounts) > 0 {
 				wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", folderCounts)
+				// Tray + shell badge must follow the same counts: undoing a read
+				// can bring unread back into view while the window is hidden.
+				a.refreshUnreadIndicators()
 			}
 		}
 	}

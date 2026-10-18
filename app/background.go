@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -172,6 +173,88 @@ func (a *App) processIdleEvents(ctx context.Context) {
 	}
 }
 
+// idleResyncRetryDelay is how long a deferred IDLE new-mail event waits
+// before re-entering handleIdleNewMail. Long enough for the in-flight sync
+// that crowded it out to finish, short enough to feel real-time.
+const idleResyncRetryDelay = 15 * time.Second
+
+// idleResyncMaxAttempts bounds the retry chain per inbox. If a sync wedges
+// (IMAP hang, dead context), give up and let the scheduled poll — the
+// design's standing backstop — pick the mail up instead of spinning forever.
+const idleResyncMaxAttempts = 5
+
+// idleResyncAfterFunc is the arming edge of requestIdleResync; tests swap it
+// to observe retries without waiting on a real timer.
+var idleResyncAfterFunc = time.AfterFunc
+
+// idleResyncEntry parks an IDLE new-mail event that arrived while a sync for
+// the same inbox was already in flight, so it can be replayed once that sync
+// releases the folder.
+type idleResyncEntry struct {
+	event    imap.MailEvent
+	attempts int
+}
+
+// requestIdleResync defers an IDLE new-mail event that could not be handled
+// now — a folder sync is running, or the scheduler owns the account — and
+// arms a single delayed retry per inbox. The in-flight sync may have FETCHed
+// before the new message landed on the server, so dropping the event would
+// leave the mail unseen until the next scheduled poll. The retry re-enters
+// handleIdleNewMail, which either syncs, re-arms, or gives up after
+// idleResyncMaxAttempts.
+func (a *App) requestIdleResync(event imap.MailEvent, folderID string) {
+	key := event.AccountID + ":" + folderID
+	log := logging.WithComponent("app.idle")
+
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	if a.idleResyncPending == nil {
+		a.idleResyncPending = make(map[string]idleResyncEntry)
+	}
+	entry, armed := a.idleResyncPending[key]
+	if armed {
+		// A retry is already pending for this inbox; fold this event into it
+		// and count the attempt so a permanently-busy folder still gives up.
+		entry.event = event
+		entry.attempts++
+	} else {
+		entry = idleResyncEntry{event: event, attempts: 1}
+	}
+	if entry.attempts > idleResyncMaxAttempts {
+		delete(a.idleResyncPending, key)
+		log.Warn().
+			Str("syncKey", key).
+			Int("attempts", entry.attempts-1).
+			Msg("Giving up on deferred IDLE new-mail event; scheduled sync is the backstop")
+		return
+	}
+	a.idleResyncPending[key] = entry
+	if armed {
+		return
+	}
+
+	idleResyncAfterFunc(idleResyncRetryDelay, func() {
+		a.syncMu.Lock()
+		pending, ok := a.idleResyncPending[key]
+		delete(a.idleResyncPending, key)
+		a.syncMu.Unlock()
+		if !ok {
+			return
+		}
+		// Shutdown cancels the Wails context; a parked retry must not touch
+		// a closing database.
+		if a.ctx == nil {
+			return
+		}
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+		}
+		a.handleIdleNewMail(pending.event)
+	})
+}
+
 // handleIdleNewMail handles a new mail event from IDLE
 func (a *App) handleIdleNewMail(event imap.MailEvent) {
 	defer recoverPanic("app.idle", "handle IDLE new mail")
@@ -192,17 +275,29 @@ func (a *App) handleIdleNewMail(event imap.MailEvent) {
 	// Use composite key for sync tracking
 	syncKey := event.AccountID + ":" + folderID
 
-	// Check if a sync is already running for this folder - skip IDLE sync if so
+	// Check if a sync is already running for this folder. Do NOT drop the
+	// event on the floor: that sync may have FETCHed before this message
+	// arrived, so park the event and replay it once the folder is free.
 	a.syncMu.Lock()
 	if _, exists := a.syncContexts[syncKey]; exists {
 		a.syncMu.Unlock()
-		log.Debug().Str("syncKey", syncKey).Msg("Skipping IDLE sync - sync already in progress")
+		log.Debug().Str("syncKey", syncKey).Msg("IDLE sync already in progress - deferring new-mail event")
+		a.requestIdleResync(event, folderID)
 		return
 	}
 	a.syncMu.Unlock()
 
 	// Use the scheduler's blocking sync to get new mail info
 	newMailInfo, err := a.syncScheduler.SyncAccountInboxBlocking(event.AccountID)
+
+	if errors.Is(err, sync.ErrSyncBusy) {
+		// A scheduled tick owns the account. Its FETCH may predate this
+		// message, so park the event for a bounded retry instead of
+		// treating "busy" as "nothing new".
+		log.Debug().Str("accountID", event.AccountID).Msg("Scheduler busy - deferring IDLE new-mail event")
+		a.requestIdleResync(event, folderID)
+		return
+	}
 
 	if err != nil {
 		log.Error().Err(err).Str("accountID", event.AccountID).Msg("Failed to sync after IDLE notification")
@@ -458,6 +553,15 @@ func (a *App) handleIdleExpunge(accountID string) {
 		"folderId":  folderID,
 	})
 
+	if errors.Is(syncErr, sync.ErrSyncBusy) {
+		// A sync is already reconciling this account; its UID diff removes
+		// the deleted rows. The trailing countsChanged/refresh below would
+		// read pre-delete counts, so skip them — that sync republishes when
+		// it finishes.
+		log.Debug().Str("accountID", accountID).Msg("IDLE expunge reconcile skipped - sync already in progress")
+		return
+	}
+
 	if syncErr != nil {
 		log.Warn().Err(syncErr).Str("accountID", accountID).Msg("IDLE expunge reconcile failed")
 		return
@@ -469,6 +573,9 @@ func (a *App) handleIdleExpunge(accountID string) {
 			folderID: updated.UnreadCount,
 		})
 	}
+	// Expunges can drop unread rows out of the inbox; republish the tray dot
+	// and dock badge so a hidden window's indicators stay accurate.
+	a.refreshUnreadIndicators()
 }
 
 // handleNewMailNotification handles notifications for new mail

@@ -305,6 +305,11 @@ func (a *App) RemoveAccount(id string) error {
 	// Scale database connection pool after removing account
 	a.updateDBConnectionPool()
 
+	// The unified unread count is a sum over enabled accounts' inboxes;
+	// dropping an account (cascade deletes its folders) changes that sum, so
+	// the tray dot must be republished rather than wait for the next sync.
+	a.refreshUnreadIndicators()
+
 	log.Info().Str("account_id", id).Msg("Account removed")
 	return nil
 }
@@ -329,6 +334,10 @@ func (a *App) SetAccountEnabled(id string, enabled bool) error {
 			a.idleManager.StopAccount(id)
 		}
 	}
+
+	// The unified unread count only sums enabled accounts; toggling the flag
+	// changes it immediately, so the tray dot must not wait for a sync.
+	a.refreshUnreadIndicators()
 
 	return nil
 }

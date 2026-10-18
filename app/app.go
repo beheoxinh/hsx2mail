@@ -330,6 +330,11 @@ type App struct {
 	wakeSyncing     bool                          // guards syncAfterWake against concurrent calls
 	syncMu          goSync.Mutex                  // protects sync maps
 
+	// IDLE new-mail events that arrived while a sync owned the same inbox,
+	// parked for a bounded retry (see requestIdleResync in background.go).
+	// Guarded by syncMu.
+	idleResyncPending map[string]idleResyncEntry
+
 	// Suppresses the IDLE echo of our own flag writes: when Hsx2Mail STOREs a flag
 	// change it stamps the account here, so the incoming IDLE FETCH echo of that
 	// same change doesn't trigger a re-sync (only other clients' changes do).
@@ -806,6 +811,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Initialize sync context tracking for cancel-and-restart
 	a.syncContexts = make(map[string]context.CancelFunc)
 	a.syncLastRequest = make(map[string]time.Time)
+	a.idleResyncPending = make(map[string]idleResyncEntry)
 	a.ownFlagChangeAt = make(map[string]time.Time)
 	a.draftSyncContexts = make(map[string]context.CancelFunc)
 	a.draftSyncDone = make(map[string]chan struct{})

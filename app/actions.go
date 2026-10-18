@@ -173,6 +173,10 @@ func (a *App) refreshFolderUnreadAfterServerFlagChange(folderObj *folder.Folder)
 	wailsRuntime.EventsEmit(a.ctx, "folders:countsChanged", map[string]int{
 		folderObj.ID: unreadCount,
 	})
+	// The server-side mark-all paths funnel through here, so the tray dot and
+	// dock badge must follow the sidebar badge: mark-all-read on the inbox has
+	// to clear the dot without waiting for the next sync.
+	a.refreshUnreadIndicators()
 	return nil
 }
 

@@ -58,4 +58,9 @@ func (a *App) startTray() {
 		},
 		Quit: a.QuitApp,
 	})
+	// The icon's default artwork is "inbox clear"; publish the real count
+	// immediately, or a tray created on a desktop that lacks a shell badge
+	// (where startLauncherBadge's own refresh never runs) would show a green
+	// tick while unread mail sits in the inbox.
+	a.refreshUnreadIndicators()
 }
